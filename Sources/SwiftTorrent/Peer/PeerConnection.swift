@@ -177,7 +177,7 @@ public final class PeerConnection: @unchecked Sendable {
         while buffer.count < count {
             let needed = count - buffer.count
             let chunk = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Data, Error>) in
-                connection.receive(minimumIncompleteLength: 1, maximumLength: max(needed, 16384)) { data, _, isComplete, error in
+                connection.receive(minimumIncompleteLength: 1, maximumLength: max(needed, 65536)) { data, _, isComplete, error in
                     if let error {
                         continuation.resume(throwing: error)
                     } else if let data, !data.isEmpty {

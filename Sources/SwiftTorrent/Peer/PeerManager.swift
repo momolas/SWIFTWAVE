@@ -21,7 +21,7 @@ public actor PeerManager {
     public var onBlockSent: ((Int) -> Void)?
     public var onMetadataReceived: ((TorrentInfo) -> Void)?
     public var onDHTPortReceived: ((String, UInt16) -> Void)?
-    private var globalPendingRequests: [PeerState.BlockRequest: String] = [:]
+    private var globalPendingRequests: [PeerState.BlockRequest: Set<String>] = [:]
 
     public let isPrivate: Bool
     public var dhtPort: UInt16?
@@ -283,7 +283,14 @@ public actor PeerManager {
                 dropped = await state.clearPendingRequests()
             }
             for req in dropped {
-                globalPendingRequests.removeValue(forKey: req)
+                if var peers = globalPendingRequests[req] {
+                    peers.remove(key)
+                    if peers.isEmpty {
+                        globalPendingRequests.removeValue(forKey: req)
+                    } else {
+                        globalPendingRequests[req] = peers
+                    }
+                }
             }
 
         case .unchoke:
@@ -325,7 +332,14 @@ public actor PeerManager {
         case .rejectRequest(let index, let begin, let length):
             let req = PeerState.BlockRequest(pieceIndex: Int(index), offset: Int(begin), length: Int(length))
             await state.removePendingRequest(req)
-            globalPendingRequests.removeValue(forKey: req)
+            if var peers = globalPendingRequests[req] {
+                peers.remove(key)
+                if peers.isEmpty {
+                    globalPendingRequests.removeValue(forKey: req)
+                } else {
+                    globalPendingRequests[req] = peers
+                }
+            }
             await fillRequests(for: key)
 
         case .piece(let index, let begin, let block):
@@ -333,8 +347,18 @@ public actor PeerManager {
             let offset = Int(begin)
             let request = PeerState.BlockRequest(pieceIndex: pieceIndex, offset: offset, length: block.count)
             await state.removePendingRequest(request)
-            globalPendingRequests.removeValue(forKey: request)
+            let otherKeys = globalPendingRequests.removeValue(forKey: request)
             onBlockReceived?(block.count)
+
+            // Endgame mode: cancel request on any other peers that had this duplicate block pending
+            if let otherKeys, otherKeys.count > 1 {
+                for otherKey in otherKeys where otherKey != key {
+                    if let otherState = peerStates[otherKey], let otherConn = connections[otherKey] {
+                        await otherState.removePendingRequest(request)
+                        try? await otherConn.send(.cancel(index: index, begin: begin, length: UInt32(block.count)))
+                    }
+                }
+            }
 
             guard let pm = pieceManager else { break }
             await pm.addBlock(pieceIndex: pieceIndex, offset: offset, data: block)
@@ -498,6 +522,21 @@ public actor PeerManager {
                 }
             }
 
+            // 3. Endgame Mode: If all pieces are either completed or in progress, allow duplicate requests for missing blocks
+            let isEndgame = (completed.popcount + inProgress.count >= (pieceCount > 0 ? pieceCount : 1)) || (completed.popcount >= Int(Double(pieceCount) * 0.95))
+            if targetPiece == nil && isEndgame {
+                for inProgIdx in inProgress {
+                    if !completed.get(inProgIdx) && peerBF.get(inProgIdx) && !triedPieces.contains(inProgIdx) {
+                        if !(await isPieceFullyRequested(inProgIdx, pieceManager: pm, isEndgame: true, peerKey: key)) {
+                            targetPiece = inProgIdx
+                            break
+                        } else {
+                            triedPieces.insert(inProgIdx)
+                        }
+                    }
+                }
+            }
+
             guard let pieceIndex = targetPiece else { break }
             triedPieces.insert(pieceIndex)
 
@@ -518,10 +557,28 @@ public actor PeerManager {
                 let alreadyReceived = await pm.isBlockReceived(pieceIndex: pieceIndex, offset: offset)
                 let length = min(blockSize, pieceSize - offset)
                 let request = PeerState.BlockRequest(pieceIndex: pieceIndex, offset: offset, length: length)
-                let alreadyPendingGlobally = (globalPendingRequests[request] != nil)
+                let peersWithBlock = globalPendingRequests[request] ?? []
+                let alreadyPendingOnThisPeer = peersWithBlock.contains(key)
+                let alreadyPendingGlobally = !peersWithBlock.isEmpty
 
-                if !alreadyReceived && !alreadyPendingGlobally {
-                    globalPendingRequests[request] = key
+                // In normal mode: request if not received and not pending on ANY peer.
+                // In endgame mode: request if not received and not yet pending on THIS peer (max 2-3 duplicate peers).
+                let shouldRequest: Bool
+                if alreadyReceived || alreadyPendingOnThisPeer {
+                    shouldRequest = false
+                } else if !alreadyPendingGlobally {
+                    shouldRequest = true
+                } else if isEndgame && peersWithBlock.count < 3 {
+                    shouldRequest = true
+                } else {
+                    shouldRequest = false
+                }
+
+                if shouldRequest {
+                    var currentSet = globalPendingRequests[request] ?? []
+                    currentSet.insert(key)
+                    globalPendingRequests[request] = currentSet
+
                     await state.addPendingRequest(request)
                     try? await conn.send(.request(
                         index: UInt32(pieceIndex),
@@ -534,7 +591,7 @@ public actor PeerManager {
         }
     }
 
-    private func isPieceFullyRequested(_ pieceIndex: Int, pieceManager: PieceManager) async -> Bool {
+    private func isPieceFullyRequested(_ pieceIndex: Int, pieceManager: PieceManager, isEndgame: Bool = false, peerKey: String? = nil) async -> Bool {
         let pieceSize = await pieceManager.expectedPieceSize(pieceIndex)
         let blockSize = 16384
         var offset = 0
@@ -542,9 +599,16 @@ public actor PeerManager {
             let length = min(blockSize, pieceSize - offset)
             let request = PeerState.BlockRequest(pieceIndex: pieceIndex, offset: offset, length: length)
             let received = await pieceManager.isBlockReceived(pieceIndex: pieceIndex, offset: offset)
-            let pending = (globalPendingRequests[request] != nil)
-            if !received && !pending {
-                return false
+            let peers = globalPendingRequests[request] ?? []
+            if !received {
+                if !isEndgame {
+                    if peers.isEmpty { return false }
+                } else {
+                    // In endgame mode, piece is not fully requested from this peer's perspective if this peer hasn't requested it yet
+                    if let peerKey, !peers.contains(peerKey) && peers.count < 3 {
+                        return false
+                    }
+                }
             }
             offset += blockSize
         }
@@ -570,7 +634,15 @@ public actor PeerManager {
         peerStates.removeValue(forKey: key)
         connectedPeers.remove(key)
         connectingKeys.remove(key)
-        globalPendingRequests = globalPendingRequests.filter { $0.value != key }
+        for (req, var peers) in globalPendingRequests {
+            if peers.remove(key) != nil {
+                if peers.isEmpty {
+                    globalPendingRequests.removeValue(forKey: req)
+                } else {
+                    globalPendingRequests[req] = peers
+                }
+            }
+        }
     }
 
     /// Remove a peer.
@@ -638,7 +710,14 @@ public actor PeerManager {
             let timedOut = await state.timedOutRequests()
             for request in timedOut {
                 await state.removePendingRequest(request)
-                globalPendingRequests.removeValue(forKey: request)
+                if var peers = globalPendingRequests[request] {
+                    peers.remove(key)
+                    if peers.isEmpty {
+                        globalPendingRequests.removeValue(forKey: request)
+                    } else {
+                        globalPendingRequests[request] = peers
+                    }
+                }
             }
             if !timedOut.isEmpty {
                 await fillRequests(for: key)
@@ -646,18 +725,27 @@ public actor PeerManager {
         }
 
         // Self-healing: purge any global requests for inactive or desynced peers
-        var orphaned: [PeerState.BlockRequest] = []
-        for (req, peerKey) in globalPendingRequests {
-            if let pState = peerStates[peerKey] {
-                if !(await pState.hasPending(req)) {
-                    orphaned.append(req)
+        var orphaned: [(PeerState.BlockRequest, String)] = []
+        for (req, peerKeys) in globalPendingRequests {
+            for peerKey in peerKeys {
+                if let pState = peerStates[peerKey] {
+                    if !(await pState.hasPending(req)) {
+                        orphaned.append((req, peerKey))
+                    }
+                } else {
+                    orphaned.append((req, peerKey))
                 }
-            } else {
-                orphaned.append(req)
             }
         }
-        for req in orphaned {
-            globalPendingRequests.removeValue(forKey: req)
+        for (req, peerKey) in orphaned {
+            if var peers = globalPendingRequests[req] {
+                peers.remove(peerKey)
+                if peers.isEmpty {
+                    globalPendingRequests.removeValue(forKey: req)
+                } else {
+                    globalPendingRequests[req] = peers
+                }
+            }
         }
     }
 

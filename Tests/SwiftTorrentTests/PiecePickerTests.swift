@@ -63,4 +63,21 @@ final class PiecePickerTests: XCTestCase {
         let picked = picker.pick(have: have, peerHas: peerBF)
         XCTAssertTrue(picked == 0 || picked == 2)
     }
+
+    func testTieBreakingRarestFirstRandomness() {
+        // When multiple pieces have the exact same lowest availability, both should be chosen across multiple iterations
+        var picker = PiecePicker(pieceCount: 10)
+        var peerBF = Bitfield(count: 10)
+        for i in 0..<10 { peerBF.set(i) }
+        let have = Bitfield(count: 10)
+
+        var pickedPieces = Set<Int>()
+        for _ in 0..<100 {
+            if let picked = picker.pick(have: have, peerHas: peerBF) {
+                pickedPieces.insert(picked)
+            }
+        }
+        // With 100 picks across 10 pieces with equal availability, we should pick at least 2 distinct pieces
+        XCTAssertGreaterThan(pickedPieces.count, 1)
+    }
 }

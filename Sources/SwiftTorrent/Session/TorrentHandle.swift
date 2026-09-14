@@ -448,8 +448,17 @@ public actor TorrentHandle {
             guard let self, let dht = dhtNode else { return }
             await self.queryDHTPeers(dhtNode: dht)
 
+            // Warm-up query after 30 seconds to catch early swarm additions
+            try? await Task.sleep(for: .seconds(30))
+            if !Task.isCancelled {
+                await self.queryDHTPeers(dhtNode: dht)
+            }
+
             while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(900))
+                // Poll every 120s if connected peer count is low (< 20), otherwise standard 300s
+                let currentPeers = await self.peerManager.connectedCount
+                let sleepSecs: Double = currentPeers < 20 ? 120 : 300
+                try? await Task.sleep(for: .seconds(sleepSecs))
                 guard !Task.isCancelled else { break }
                 await self.queryDHTPeers(dhtNode: dht)
             }

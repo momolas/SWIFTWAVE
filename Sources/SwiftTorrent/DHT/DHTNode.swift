@@ -11,6 +11,8 @@ private let bootstrapNodes: [(String, Int)] = [
     ("dht.transmissionbt.com", 6881),
     ("router.utorrent.com", 6881),
     ("dht.aelitis.com", 6881),
+    ("dht.libtorrent.org", 25401),
+    ("router.bitcomet.com", 6881),
 ]
 
 /// A DHT node that handles KRPC queries (BEP-5).

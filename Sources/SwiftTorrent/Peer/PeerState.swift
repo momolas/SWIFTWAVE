@@ -23,7 +23,7 @@ public actor PeerState {
     private var pendingRequests: [BlockRequest: Date] = [:]
     public let maxPipelineDepth: Int
 
-    public init(pieceCount: Int, maxPipelineDepth: Int = 16) {
+    public init(pieceCount: Int, maxPipelineDepth: Int = 64) {
         self.peerBitfield = Bitfield(count: pieceCount)
         self.maxPipelineDepth = maxPipelineDepth
     }

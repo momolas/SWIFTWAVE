@@ -71,20 +71,23 @@ public struct PiecePicker: Sendable {
             }
         }
 
-        var best: Int?
         var bestAvail = Int.max
+        var candidates: [Int] = []
 
         for i in 0..<pieceCount {
             // We don't have it, peer does have it
             if !have.get(i) && peerHas.get(i) {
-                if availability[i] < bestAvail {
-                    bestAvail = availability[i]
-                    best = i
+                let avail = availability[i]
+                if avail < bestAvail {
+                    bestAvail = avail
+                    candidates = [i]
+                } else if avail == bestAvail {
+                    candidates.append(i)
                 }
             }
         }
 
-        return best
+        return candidates.randomElement()
     }
 
     /// Pick multiple pieces (for pipelining).
