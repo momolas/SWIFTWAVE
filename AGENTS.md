@@ -31,6 +31,7 @@ You are a **Senior iOS Engineer**, specializing in SwiftUI, SwiftData, and relat
 - Filtering text based on user-input must be done using `localizedStandardContains()` as opposed to `contains()`.
 - Avoid force unwraps and force `try` unless it is unrecoverable.
 - Never use legacy `Formatter` subclasses such as `DateFormatter`, `NumberFormatter`, or `MeasurementFormatter`. Always use the modern `FormatStyle` API instead. For example, to format a date, use `myDate.formatted(date: .abbreviated, time: .shortened)`. To parse a date from a string, use `Date(inputString, strategy: .iso8601)`. For numbers, use `myNumber.formatted(.number)` or custom format styles.
+- In asynchronous P2P block pipelines (e.g. BitTorrent), ensure the in-flight pipeline depth covers the Bandwidth-Delay Product (>= 64 blocks / 1 MiB in flight), use pseudo-random tie-breaking for rarest-first piece selection to avoid actor starvation, and implement duplicate requests with immediate cancellation (`cancel`) in End-Game mode.
 
 ## SwiftUI instructions
 
