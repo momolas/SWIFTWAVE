@@ -92,4 +92,18 @@ final class BugFixesTests: XCTestCase {
             XCTAssertTrue(error is DiskIOError)
         }
     }
+
+    func testPeerStateClearPendingRequestsReturnsDropped() async {
+        let state = PeerState(pieceCount: 10)
+        let req1 = PeerState.BlockRequest(pieceIndex: 0, offset: 0, length: 16384)
+        let req2 = PeerState.BlockRequest(pieceIndex: 1, offset: 0, length: 16384)
+        await state.addPendingRequest(req1)
+        await state.addPendingRequest(req2)
+
+        let dropped = await state.clearPendingRequests()
+        XCTAssertEqual(Set(dropped), Set([req1, req2]))
+        let remaining = await state.getPendingRequests()
+        XCTAssertTrue(remaining.isEmpty)
+    }
 }
+

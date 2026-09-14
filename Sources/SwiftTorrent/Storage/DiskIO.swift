@@ -94,6 +94,9 @@ public actor DiskIO {
 
                 let handle = try FileHandle(forWritingTo: URL(fileURLWithPath: filePath))
                 defer { try? handle.close() }
+                #if os(macOS)
+                fcntl(handle.fileDescriptor, F_NOCACHE, 1)
+                #endif
                 try handle.seek(toOffset: UInt64(slice.offset))
                 let chunk = data.subdata(in: dataOffset..<dataOffset + slice.length)
                 try handle.write(contentsOf: chunk)

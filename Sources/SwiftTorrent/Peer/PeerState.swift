@@ -114,8 +114,11 @@ public actor PeerState {
         suggestedPieces.insert(pieceIndex)
     }
 
-    public func clearPendingRequests() {
+    @discardableResult
+    public func clearPendingRequests() -> [BlockRequest] {
+        let dropped = Array(pendingRequests.keys)
         pendingRequests.removeAll()
+        return dropped
     }
 
     /// Clear pending requests whose piece is NOT in allowedFastPieces, returning the dropped requests.

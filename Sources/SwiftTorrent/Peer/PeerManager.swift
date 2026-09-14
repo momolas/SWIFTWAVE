@@ -276,13 +276,14 @@ public actor PeerManager {
 
         case .choke:
             await state.setPeerChoking(true)
+            let dropped: [PeerState.BlockRequest]
             if connections[key]?.supportsFastExtension == true {
-                let dropped = await state.clearPendingRequestsExceptAllowedFast()
-                for req in dropped {
-                    globalPendingRequests.removeValue(forKey: req)
-                }
+                dropped = await state.clearPendingRequestsExceptAllowedFast()
             } else {
-                await state.clearPendingRequests()
+                dropped = await state.clearPendingRequests()
+            }
+            for req in dropped {
+                globalPendingRequests.removeValue(forKey: req)
             }
 
         case .unchoke:
@@ -481,8 +482,9 @@ public actor PeerManager {
                     }
                 }
 
-                // 2. Otherwise pick a new piece with rarest-first
-                if targetPiece == nil, let picker = piecePicker {
+                // 2. Otherwise pick a new piece with rarest-first (capped to 32 concurrent pieces to prevent unbounded RAM usage)
+                let maxConcurrentPieces = 32
+                if targetPiece == nil, inProgress.count < maxConcurrentPieces, let picker = piecePicker {
                     var tempHave = completed
                     for tried in triedPieces {
                         tempHave.set(tried)
@@ -641,6 +643,21 @@ public actor PeerManager {
             if !timedOut.isEmpty {
                 await fillRequests(for: key)
             }
+        }
+
+        // Self-healing: purge any global requests for inactive or desynced peers
+        var orphaned: [PeerState.BlockRequest] = []
+        for (req, peerKey) in globalPendingRequests {
+            if let pState = peerStates[peerKey] {
+                if !(await pState.hasPending(req)) {
+                    orphaned.append(req)
+                }
+            } else {
+                orphaned.append(req)
+            }
+        }
+        for req in orphaned {
+            globalPendingRequests.removeValue(forKey: req)
         }
     }
 
