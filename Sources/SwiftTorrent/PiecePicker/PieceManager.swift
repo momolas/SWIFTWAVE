@@ -148,6 +148,14 @@ public actor PieceManager {
         receivedBlocks.removeValue(forKey: index)
     }
 
+    /// Reset all piece completion status (e.g. for rechecking files from disk).
+    public func reset() {
+        completed = Bitfield(count: pieceCount)
+        inProgress.removeAll()
+        pieceBuffers.removeAll()
+        receivedBlocks.removeAll()
+    }
+
     /// Set initial completed bitfield from resume data.
     public func setCompletedBitfield(_ bitfield: Bitfield) {
         for i in 0..<min(pieceCount, bitfield.count) {

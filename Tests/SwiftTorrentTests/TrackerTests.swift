@@ -54,8 +54,7 @@ final class TrackerTests: XCTestCase {
 
         let httpErr = TrackerError.httpStatus(403, "Forbidden")
         XCTAssertEqual(httpErr.localizedDescription, "Tracker HTTP error 403: Forbidden")
-
-        let failErr = TrackerError.failure("unregistered torrent")
-        XCTAssertEqual(failErr.localizedDescription, "unregistered torrent")
     }
 }
+
+

@@ -195,7 +195,7 @@ public actor DiskIO {
         }
     }
 
-    /// Check whether any of the torrent's files (or their .part counterparts) already exist on disk.
+    /// Check whether any of the torrent's files (or their .part counterparts) already exist on disk with non-zero size.
     public func hasExistingFiles() async -> Bool {
         var paths: [String] = []
         for file in fileStorage.files {
@@ -207,14 +207,43 @@ public actor DiskIO {
         let usePart = self.usePartExtension
         return (try? await runIO {
             for path in resolvedPaths {
-                if FileManager.default.fileExists(atPath: path) {
+                if let attrs = try? FileManager.default.attributesOfItem(atPath: path),
+                   let size = attrs[.size] as? Int64, size > 0 {
                     return true
                 }
-                if usePart && FileManager.default.fileExists(atPath: path + ".part") {
+                if usePart,
+                   let attrs = try? FileManager.default.attributesOfItem(atPath: path + ".part"),
+                   let size = attrs[.size] as? Int64, size > 0 {
                     return true
                 }
             }
             return false
         }) ?? false
+    }
+
+    /// Calculate total existing bytes for all files on disk.
+    public func totalDiskBytes() async -> Int64 {
+        var paths: [String] = []
+        for file in fileStorage.files {
+            if let path = try? resolvedPath(for: file.path) {
+                paths.append(path)
+            }
+        }
+        let resolvedPaths = paths
+        let usePart = self.usePartExtension
+        return (try? await runIO {
+            var total: Int64 = 0
+            for path in resolvedPaths {
+                if let attrs = try? FileManager.default.attributesOfItem(atPath: path),
+                   let size = attrs[.size] as? Int64 {
+                    total += size
+                } else if usePart,
+                          let attrs = try? FileManager.default.attributesOfItem(atPath: path + ".part"),
+                          let size = attrs[.size] as? Int64 {
+                    total += size
+                }
+            }
+            return total
+        }) ?? 0
     }
 }

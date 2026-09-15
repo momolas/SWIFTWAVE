@@ -210,12 +210,13 @@ public struct TorrentInfo: Sendable, Identifiable, Equatable, Hashable {
         let creationDate: Date? = root["creation date"]?.integerValue.map {
             Date(timeIntervalSince1970: TimeInterval($0))
         }
-        let announceURL = root["announce"]?.utf8String
+        let rawAnnounce = root["announce"]?.utf8String
+        let announceURL = rawAnnounce.flatMap { normalizeTrackerURL($0) }
         var announceList: [[String]] = []
         if let al = root["announce-list"]?.listValue {
             for tier in al {
                 if let urls = tier.listValue {
-                    let tierUrls = urls.compactMap { $0.utf8String }.filter { !$0.isEmpty }
+                    let tierUrls = urls.compactMap { $0.utf8String }.compactMap { normalizeTrackerURL($0) }
                     if !tierUrls.isEmpty {
                         announceList.append(tierUrls)
                     }
@@ -347,7 +348,19 @@ public struct TorrentInfo: Sendable, Identifiable, Equatable, Hashable {
             throw BencodeError.invalidFormat("Unexpected byte in skip")
         }
     }
+
+    internal static func normalizeTrackerURL(_ raw: String) -> String? {
+        var trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        while trimmed.hasSuffix("/") {
+            trimmed.removeLast()
+        }
+        guard trimmed.hasPrefix("http://") || trimmed.hasPrefix("https://") || trimmed.hasPrefix("udp://") else {
+            return nil
+        }
+        return trimmed
+    }
 }
+
 
 public enum TorrentInfoError: Error, Equatable {
     case invalidFormat(String)

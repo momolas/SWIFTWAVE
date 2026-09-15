@@ -61,12 +61,11 @@ public actor TrackerManager {
 
     @discardableResult
     public func addTracker(urlString: String) -> Bool {
-        let trimmed = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return false }
-        if trackerEntries[trimmed] == nil {
-            tiers.append([trimmed])
-            let blocked = isBlocked?(trimmed) ?? false
-            trackerEntries[trimmed] = TrackerEntry(urlString: trimmed, status: blocked ? .blocked : .notContacted)
+        guard let normalized = TorrentInfo.normalizeTrackerURL(urlString) else { return false }
+        if trackerEntries[normalized] == nil {
+            tiers.append([normalized])
+            let blocked = isBlocked?(normalized) ?? false
+            trackerEntries[normalized] = TrackerEntry(urlString: normalized, status: blocked ? .blocked : .notContacted)
             return true
         }
         return false

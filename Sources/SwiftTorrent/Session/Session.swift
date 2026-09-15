@@ -22,6 +22,10 @@ public actor Session {
             throw AddTorrentError.noInfoHash
         }
         if let existing = torrents[hash] {
+            if !params.paused {
+                try? await existing.resume()
+                try? await existing.start()
+            }
             return existing
         }
 
@@ -150,6 +154,12 @@ public actor Session {
     public func scrape(for infoHash: InfoHash) async -> [String: ScrapeInfo] {
         guard let handle = torrents[infoHash] else { return [:] }
         return await handle.scrape()
+    }
+
+    /// Force a full SHA-1 hash recheck of all files on disk for a given torrent.
+    public func recheckFiles(for infoHash: InfoHash) async {
+        guard let handle = torrents[infoHash] else { return }
+        await handle.recheckFiles()
     }
 
     /// Shutdown the session.

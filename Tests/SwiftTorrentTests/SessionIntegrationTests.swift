@@ -132,4 +132,42 @@ final class SessionIntegrationTests: XCTestCase {
         let trackers = await handle.getTrackers()
         XCTAssertTrue(trackers.contains(where: { $0.urlString == "udp://tracker.opentrackr.org:1337/announce" }))
     }
+
+    func testRealUserTorrentAddAndStart() async throws {
+        let path = "/Users/mo/Library/Application Support/ROUGHCOMPUTER/Torrents/892694aa2a81794ab994cf2055470d1af58fc160.torrent"
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)) else { return }
+
+        let tempDir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let settings = SessionSettings(listenPort: 6881, dhtEnabled: true, savePath: tempDir.path)
+        let session = Session(settings: settings)
+
+        let params = try AddTorrentParams.fromData(data, savePath: tempDir.path, paused: false)
+        let handle = try await session.addTorrent(params)
+
+        for tr in [
+            "udp://tracker.opentrackr.org:1337/announce",
+            "udp://open.stealth.si:80/announce",
+            "udp://tracker.torrent.eu.org:451/announce"
+        ] {
+            await handle.addTracker(urlString: tr)
+        }
+
+        let st = await handle.status()
+        print("Status name:", st.name, "state:", st.state, "pieces:", st.piecesCompleted, "/", st.piecesTotal)
+        XCTAssertEqual(st.state, TorrentState.downloading)
+
+        // Wait a few seconds to check if peers connect
+        for i in 1...10 {
+            try await Task.sleep(for: .seconds(1))
+            let peers = await handle.getPeers()
+            let currentSt = await handle.status()
+            print("[\(i)s] peers=\(peers.count), rate=\(currentSt.downloadRate), downloaded=\(currentSt.totalDownloaded)")
+            if peers.count > 0 || currentSt.totalDownloaded > 0 {
+                break
+            }
+        }
+    }
 }

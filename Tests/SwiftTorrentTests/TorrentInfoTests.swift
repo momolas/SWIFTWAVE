@@ -79,4 +79,14 @@ final class TorrentInfoTests: XCTestCase {
         let info2 = try TorrentInfo.parse(from: data)
         XCTAssertEqual(info1.infoHash, info2.infoHash)
     }
+
+    func testParseRealUserTorrent() throws {
+        let path = "/Users/mo/Library/Application Support/ROUGHCOMPUTER/Torrents/892694aa2a81794ab994cf2055470d1af58fc160.torrent"
+        if let data = try? Data(contentsOf: URL(fileURLWithPath: path)) {
+            let info = try TorrentInfo.parse(from: data)
+            XCTAssertEqual(info.name, "The.End.of.Oak.Street.2026.READNFO.MULTi.VF2.1080p.WEB.H264-SUPPLY.mkv")
+            XCTAssertEqual(info.infoHash.description, "892694aa2a81794ab994cf2055470d1af58fc160")
+            print("Successfully parsed real user torrent:", info.name, "infoHash:", info.infoHash.description)
+        }
+    }
 }

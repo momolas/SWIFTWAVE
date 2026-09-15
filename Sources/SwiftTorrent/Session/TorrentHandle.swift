@@ -105,9 +105,16 @@ public actor TorrentHandle {
             self.totalUploaded = resume.uploaded
             let isComplete = await pm.isComplete()
             if isComplete {
-                await transitionToSeeding()
+                let diskBytes = await dio.totalDiskBytes()
+                if diskBytes >= info.totalSize {
+                    await transitionToSeeding()
+                    return
+                }
+                // Disk size mismatch with 100% completion in resume -> reset and perform full disk verify
+                await pm.reset()
+            } else {
+                return
             }
-            return
         }
 
         // Full disk check: if files exist on disk without resume data (e.g. torrent was re-added)
@@ -130,6 +137,35 @@ public actor TorrentHandle {
             await transitionToSeeding()
         } else {
             state = (previousState == .paused) ? .paused : .downloading
+        }
+    }
+
+    /// Force a full SHA-1 hash recheck of all files on disk.
+    public func recheckFiles() async {
+        guard let info = self.info, let pm = self.pieceManager, let dio = self.diskIO else { return }
+        let previousState = state
+        state = .checkingFiles
+        downloadRate = 0
+
+        await pm.reset()
+
+        let pieceCount = info.pieceCount
+        for i in 0..<pieceCount {
+            if let data = try? await dio.readPiece(index: i), !data.isEmpty {
+                _ = await pm.verifyPieceFromDisk(index: i, data: data)
+            }
+        }
+
+        self.totalDownloaded = await pm.completedBytes()
+        let isComplete = await pm.isComplete()
+        if isComplete {
+            await transitionToSeeding()
+        } else {
+            state = (previousState == .paused) ? .paused : .downloading
+            if state == .downloading {
+                try? await dio.allocateFiles()
+                startDownloadMonitor()
+            }
         }
     }
 
