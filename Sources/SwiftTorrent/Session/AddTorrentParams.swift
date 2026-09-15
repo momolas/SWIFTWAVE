@@ -19,11 +19,16 @@ public struct AddTorrentParams: Sendable {
         self.isStreaming = isStreaming
     }
 
-    /// Create from a .torrent file path.
-    public static func fromFile(_ path: String, savePath: String? = nil, isStreaming: Bool = false) throws -> AddTorrentParams {
-        let data = try Data(contentsOf: URL(fileURLWithPath: path))
+    /// Create from raw .torrent file data in memory.
+    public static func fromData(_ data: Data, savePath: String? = nil, paused: Bool = false, isStreaming: Bool = false) throws -> AddTorrentParams {
         let info = try TorrentInfo.parse(from: data)
-        return AddTorrentParams(torrentInfo: info, savePath: savePath, isStreaming: isStreaming)
+        return AddTorrentParams(torrentInfo: info, savePath: savePath, paused: paused, isStreaming: isStreaming)
+    }
+
+    /// Create from a .torrent file path.
+    public static func fromFile(_ path: String, savePath: String? = nil, paused: Bool = false, isStreaming: Bool = false) throws -> AddTorrentParams {
+        let data = try Data(contentsOf: URL(fileURLWithPath: path))
+        return try fromData(data, savePath: savePath, paused: paused, isStreaming: isStreaming)
     }
 
     /// Create from a magnet URI.

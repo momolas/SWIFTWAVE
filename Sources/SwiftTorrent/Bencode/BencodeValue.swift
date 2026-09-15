@@ -20,7 +20,9 @@ public enum BencodeValue: Equatable, Sendable {
     }
 
     public var utf8String: String? {
-        if case .string(let v) = self { return String(data: v, encoding: .utf8) }
+        if case .string(let v) = self {
+            return String(data: v, encoding: .utf8) ?? String(decoding: v, as: UTF8.self)
+        }
         return nil
     }
 

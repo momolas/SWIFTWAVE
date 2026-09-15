@@ -207,7 +207,10 @@ public actor TorrentHandle {
                 uploaded: reportedUploaded, downloaded: totalDownloaded,
                 left: left, event: "started"
             )
-            await announceToAllTrackers(trackerMgr: trackerMgr, params: params)
+            Task { [weak self] in
+                guard let self else { return }
+                await self.announceToAllTrackers(trackerMgr: trackerMgr, params: params)
+            }
             startReannounceLoop(trackerMgr: trackerMgr)
         }
 
@@ -486,11 +489,34 @@ public actor TorrentHandle {
 
     /// Dynamically injects a new tracker URL into the tracker tiers.
     public func addTracker(urlString: String) async {
-        if let trackerMgr = trackerManager {
-            await trackerMgr.addTracker(urlString: urlString)
+        let isNew: Bool
+        let trackerMgr: TrackerManager
+        if let existing = trackerManager {
+            isNew = await existing.addTracker(urlString: urlString)
+            trackerMgr = existing
         } else {
             let tm = TrackerManager(tiers: [[urlString]], isBlocked: settings.isTrackerBlocked)
             self.trackerManager = tm
+            isNew = true
+            trackerMgr = tm
+        }
+
+        // If torrent is currently active and this is a newly added tracker, announce to it immediately
+        if isNew && (state == .downloading || state == .downloadingMetadata || state == .seeding) {
+            let left = getRemainingBytes()
+            let reportedUploaded = Int64(Double(totalUploaded) * max(1.0, settings.uploadMultiplier))
+            let params = AnnounceParams(
+                infoHash: infoHash, peerID: peerID, port: settings.listenPort,
+                uploaded: reportedUploaded, downloaded: totalDownloaded,
+                left: left, event: "started"
+            )
+            Task { [weak self] in
+                guard let self else { return }
+                let newPeers = await trackerMgr.announceSingle(urlString: urlString, params: params)
+                if !newPeers.isEmpty {
+                    await self.peerManager.addPeers(newPeers)
+                }
+            }
         }
     }
 

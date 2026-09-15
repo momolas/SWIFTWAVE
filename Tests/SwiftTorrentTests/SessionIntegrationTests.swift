@@ -88,4 +88,48 @@ final class SessionIntegrationTests: XCTestCase {
             XCTFail("Expected query message")
         }
     }
+
+    func testAddTorrentParamsFromData() throws {
+        // Construct minimal valid .torrent bencode
+        let infoDict: [(key: Data, value: BencodeValue)] = [
+            (key: Data("name".utf8), value: .string(Data("sample.txt".utf8))),
+            (key: Data("piece length".utf8), value: .integer(16384)),
+            (key: Data("pieces".utf8), value: .string(Data(repeating: 0x55, count: 20))),
+            (key: Data("length".utf8), value: .integer(100))
+        ]
+        let rootDict: [(key: Data, value: BencodeValue)] = [
+            (key: Data("announce".utf8), value: .string(Data("http://tracker.example.com/announce".utf8))),
+            (key: Data("info".utf8), value: .dictionary(infoDict))
+        ]
+        let encoded = BencodeEncoder().encode(.dictionary(rootDict))
+        let params = try AddTorrentParams.fromData(encoded, savePath: "/tmp/downloads")
+        XCTAssertEqual(params.torrentInfo?.name, "sample.txt")
+        XCTAssertEqual(params.savePath, "/tmp/downloads")
+        XCTAssertEqual(params.torrentInfo?.totalSize, 100)
+    }
+
+    func testAddTrackerToActiveTorrent() async throws {
+        let settings = SessionSettings(listenPort: 0, dhtEnabled: false)
+        let session = Session(settings: settings)
+        let infoDict: [(key: Data, value: BencodeValue)] = [
+            (key: Data("name".utf8), value: .string(Data("active_sample.txt".utf8))),
+            (key: Data("piece length".utf8), value: .integer(16384)),
+            (key: Data("pieces".utf8), value: .string(Data(repeating: 0x55, count: 20))),
+            (key: Data("length".utf8), value: .integer(100))
+        ]
+        let rootDict: [(key: Data, value: BencodeValue)] = [
+            (key: Data("info".utf8), value: .dictionary(infoDict))
+        ]
+        let encoded = BencodeEncoder().encode(.dictionary(rootDict))
+        let params = try AddTorrentParams.fromData(encoded, savePath: NSTemporaryDirectory(), paused: false)
+        let handle = try await session.addTorrent(params)
+
+        let status = await handle.status()
+        XCTAssertEqual(status.state, TorrentState.downloading)
+
+        // Inject new tracker
+        await handle.addTracker(urlString: "udp://tracker.opentrackr.org:1337/announce")
+        let trackers = await handle.getTrackers()
+        XCTAssertTrue(trackers.contains(where: { $0.urlString == "udp://tracker.opentrackr.org:1337/announce" }))
+    }
 }

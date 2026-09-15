@@ -127,7 +127,8 @@ public struct TorrentInfo: Sendable, Identifiable, Equatable, Hashable {
             infoHash = InfoHash.v1(from: infoData)
         }
 
-        guard let nameValue = infoValue["name"], let rawName = nameValue.utf8String else {
+        let rawName = infoValue["name.utf-8"]?.utf8String ?? infoValue["name"]?.utf8String
+        guard let rawName, !rawName.isEmpty else {
             throw TorrentInfoError.invalidFormat("Missing 'name'")
         }
         let safeName = sanitizePathComponent(rawName)
@@ -214,7 +215,20 @@ public struct TorrentInfo: Sendable, Identifiable, Equatable, Hashable {
         if let al = root["announce-list"]?.listValue {
             for tier in al {
                 if let urls = tier.listValue {
-                    announceList.append(urls.compactMap { $0.utf8String })
+                    let tierUrls = urls.compactMap { $0.utf8String }.filter { !$0.isEmpty }
+                    if !tierUrls.isEmpty {
+                        announceList.append(tierUrls)
+                    }
+                }
+            }
+        }
+        if let singleAnnounce = announceURL, !singleAnnounce.isEmpty {
+            let alreadyContains = announceList.contains(where: { $0.contains(singleAnnounce) })
+            if !alreadyContains {
+                if announceList.isEmpty {
+                    announceList = [[singleAnnounce]]
+                } else {
+                    announceList.insert([singleAnnounce], at: 0)
                 }
             }
         }
@@ -286,7 +300,9 @@ public struct TorrentInfo: Sendable, Identifiable, Equatable, Hashable {
                 throw TorrentInfoError.invalidFormat("Invalid dictionary key")
             }
             // Advance index past the key string bencode representation
-            let colonIdx = data[index...].firstIndex(of: UInt8(ascii: ":"))!
+            guard let colonIdx = data[index...].firstIndex(of: UInt8(ascii: ":")) else {
+                throw TorrentInfoError.invalidFormat("Invalid string format in dictionary key")
+            }
             let keyLen = keyData.count
             index = data.index(colonIdx, offsetBy: 1 + keyLen)
 

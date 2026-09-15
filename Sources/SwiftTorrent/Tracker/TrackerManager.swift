@@ -26,8 +26,15 @@ public actor TrackerManager {
     /// Convenience: create from TorrentInfo.
     public init(info: TorrentInfo, group: Any? = nil, isBlocked: (@Sendable (String) -> Bool)? = nil) {
         var tiers = info.announceList
-        if tiers.isEmpty, let url = info.announceURL {
-            tiers = [[url]]
+        if let url = info.announceURL, !url.isEmpty {
+            let alreadyPresent = tiers.contains(where: { $0.contains(url) })
+            if !alreadyPresent {
+                if tiers.isEmpty {
+                    tiers = [[url]]
+                } else {
+                    tiers.insert([url], at: 0)
+                }
+            }
         }
         self.tiers = tiers
         self.isBlocked = isBlocked
@@ -52,13 +59,58 @@ public actor TrackerManager {
         }
     }
 
-    public func addTracker(urlString: String) {
+    @discardableResult
+    public func addTracker(urlString: String) -> Bool {
         let trimmed = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
+        guard !trimmed.isEmpty else { return false }
         if trackerEntries[trimmed] == nil {
             tiers.append([trimmed])
             let blocked = isBlocked?(trimmed) ?? false
             trackerEntries[trimmed] = TrackerEntry(urlString: trimmed, status: blocked ? .blocked : .notContacted)
+            return true
+        }
+        return false
+    }
+
+    /// Announce to a single tracker immediately and return discovered peers.
+    public func announceSingle(urlString: String, params: AnnounceParams) async -> [(String, UInt16)] {
+        if let isBlocked, isBlocked(urlString) {
+            trackerEntries[urlString]?.status = .blocked
+            return []
+        }
+        trackerEntries[urlString]?.status = .updating
+        do {
+            let response: AnnounceResponse
+            if urlString.hasPrefix("http://") || urlString.hasPrefix("https://") {
+                let tracker = HTTPTracker(announceURL: urlString)
+                response = try await tracker.announce(params: params)
+            } else if urlString.hasPrefix("udp://") {
+                guard let components = URLComponents(string: urlString),
+                      let host = components.host,
+                      let port = components.port else {
+                    trackerEntries[urlString]?.status = .error
+                    trackerEntries[urlString]?.lastError = "Invalid UDP URL"
+                    return []
+                }
+                let tracker = UDPTracker(host: host, port: port)
+                response = try await tracker.announce(params: params)
+            } else {
+                trackerEntries[urlString]?.status = .error
+                trackerEntries[urlString]?.lastError = "Unsupported protocol"
+                return []
+            }
+            trackerEntries[urlString]?.status = .working
+            trackerEntries[urlString]?.peersCount = response.peers.count
+            trackerEntries[urlString]?.seeders = response.seeders
+            trackerEntries[urlString]?.leechers = response.leechers
+            trackerEntries[urlString]?.nextAnnounceDate = Date().addingTimeInterval(TimeInterval(max(response.interval, 60)))
+            trackerEntries[urlString]?.lastError = nil
+            return response.peers
+        } catch {
+            trackerEntries[urlString]?.status = .error
+            trackerEntries[urlString]?.lastError = error.localizedDescription
+            trackerEntries[urlString]?.nextAnnounceDate = Date().addingTimeInterval(60)
+            return []
         }
     }
 
