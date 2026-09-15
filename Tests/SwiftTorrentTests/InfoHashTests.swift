@@ -1,43 +1,50 @@
-import XCTest
+import Testing
+import Foundation
 @testable import SwiftTorrent
 
-final class InfoHashTests: XCTestCase {
-    func testFromHex() {
-        let hash = InfoHash(hex: "0123456789abcdef0123456789abcdef01234567")
-        XCTAssertNotNil(hash)
-        XCTAssertEqual(hash?.bytes.count, 20)
-        XCTAssertEqual(hash?.version, .v1)
+@Suite("InfoHash Validation")
+struct InfoHashTests {
+    @Test("Valid hex initialization")
+    func fromHex() throws {
+        let hash = try #require(InfoHash(hex: "0123456789abcdef0123456789abcdef01234567"))
+        #expect(hash.bytes.count == 20)
+        #expect(hash.version == .v1)
     }
 
-    func testInvalidHex() {
-        XCTAssertNil(InfoHash(hex: "short"))
-        XCTAssertNil(InfoHash(hex: "xyz"))
+    @Test("Invalid hex returns nil")
+    func invalidHex() {
+        #expect(InfoHash(hex: "short") == nil)
+        #expect(InfoHash(hex: "xyz") == nil)
     }
 
-    func testV1Hash() {
+    @Test("V1 SHA-1 hash computation")
+    func v1Hash() {
         let data = Data("test info dictionary".utf8)
         let hash = InfoHash.v1(from: data)
-        XCTAssertEqual(hash.bytes.count, 20)
-        XCTAssertEqual(hash.version, .v1)
+        #expect(hash.bytes.count == 20)
+        #expect(hash.version == .v1)
     }
 
-    func testV2Hash() {
+    @Test("V2 SHA-256 hash computation")
+    func v2Hash() {
         let data = Data("test info dictionary".utf8)
         let hash = InfoHash.v2(from: data)
-        XCTAssertEqual(hash.bytes.count, 32)
-        XCTAssertEqual(hash.version, .v2)
+        #expect(hash.bytes.count == 32)
+        #expect(hash.version == .v2)
     }
 
-    func testDescription() {
-        let hash = InfoHash(hex: "0123456789abcdef0123456789abcdef01234567")!
-        XCTAssertEqual(hash.description, "0123456789abcdef0123456789abcdef01234567")
+    @Test("Description returns lowercase hex")
+    func description() throws {
+        let hash = try #require(InfoHash(hex: "0123456789abcdef0123456789abcdef01234567"))
+        #expect(hash.description == "0123456789abcdef0123456789abcdef01234567")
     }
 
-    func testEquatable() {
-        let h1 = InfoHash(hex: "0123456789abcdef0123456789abcdef01234567")!
-        let h2 = InfoHash(hex: "0123456789abcdef0123456789abcdef01234567")!
-        let h3 = InfoHash(hex: "abcdef0123456789abcdef0123456789abcdef01")!
-        XCTAssertEqual(h1, h2)
-        XCTAssertNotEqual(h1, h3)
+    @Test("Equatable equality and inequality")
+    func equatable() throws {
+        let h1 = try #require(InfoHash(hex: "0123456789abcdef0123456789abcdef01234567"))
+        let h2 = try #require(InfoHash(hex: "0123456789abcdef0123456789abcdef01234567"))
+        let h3 = try #require(InfoHash(hex: "abcdef0123456789abcdef0123456789abcdef01"))
+        #expect(h1 == h2)
+        #expect(h1 != h3)
     }
 }

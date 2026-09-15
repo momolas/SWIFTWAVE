@@ -106,8 +106,7 @@ public final class PeerConnection: @unchecked Sendable {
         }
 
         // Perform handshake with 4-second timeout
-        var receiveBuffer = Data()
-        let handshakeResp: Handshake = try await withThrowingTaskGroup(of: Handshake.self) { group in
+        let (handshakeResp, initialBuffer): (Handshake, Data) = try await withThrowingTaskGroup(of: (Handshake, Data).self) { group in
             group.addTask {
                 try await Task.sleep(for: .seconds(4))
                 throw PeerConnectionError.handshakeTimeout
@@ -115,6 +114,7 @@ public final class PeerConnection: @unchecked Sendable {
 
             group.addTask {
                 try await withTaskCancellationHandler {
+                    var receiveBuffer = Data()
                     let reserved = Handshake.defaultReserved(
                         enableFastExtension: self.enableFastExtension,
                         enableDHT: self.enableDHT,
@@ -131,16 +131,18 @@ public final class PeerConnection: @unchecked Sendable {
                     if decoded.infoHash != self.infoHash {
                         throw PeerConnectionError.handshakeFailed
                     }
-                    return decoded
+                    return (decoded, receiveBuffer)
                 } onCancel: {
                     conn.cancel()
                 }
             }
 
             do {
-                let first = try await group.next()!
+                guard let result = try await group.next() else {
+                    throw PeerConnectionError.handshakeFailed
+                }
                 group.cancelAll()
-                return first
+                return result
             } catch {
                 conn.cancel()
                 group.cancelAll()
@@ -156,7 +158,7 @@ public final class PeerConnection: @unchecked Sendable {
         // Start message receive loop
         let task = Task { [weak self] in
             guard let self else { return }
-            await self.messageReceiveLoop(connection: conn, initialBuffer: receiveBuffer)
+            await self.messageReceiveLoop(connection: conn, initialBuffer: initialBuffer)
         }
         lock.withLock {
             self.receiveTask = task

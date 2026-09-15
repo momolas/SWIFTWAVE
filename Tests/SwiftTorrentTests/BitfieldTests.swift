@@ -1,40 +1,46 @@
-import XCTest
+import Testing
+import Foundation
 @testable import SwiftTorrent
 
-final class BitfieldTests: XCTestCase {
-    func testBasicOperations() {
+@Suite("Bitfield Operations")
+struct BitfieldTests {
+    @Test("Basic bit operations (set, get, clear, popcount)")
+    func basicOperations() {
         var bf = Bitfield(count: 100)
-        XCTAssertEqual(bf.count, 100)
-        XCTAssertTrue(bf.isEmpty)
-        XCTAssertFalse(bf.get(0))
+        #expect(bf.count == 100)
+        #expect(bf.isEmpty)
+        #expect(!bf.get(0))
 
         bf.set(0)
-        XCTAssertTrue(bf.get(0))
-        XCTAssertEqual(bf.popcount, 1)
+        #expect(bf.get(0))
+        #expect(bf.popcount == 1)
 
         bf.set(99)
-        XCTAssertTrue(bf.get(99))
-        XCTAssertEqual(bf.popcount, 2)
+        #expect(bf.get(99))
+        #expect(bf.popcount == 2)
 
         bf.clear(0)
-        XCTAssertFalse(bf.get(0))
-        XCTAssertEqual(bf.popcount, 1)
+        #expect(!bf.get(0))
+        #expect(bf.popcount == 1)
     }
 
-    func testAllSet() {
+    @Test("All bits set validation")
+    func allSet() {
         var bf = Bitfield(count: 8)
         for i in 0..<8 { bf.set(i) }
-        XCTAssertTrue(bf.allSet)
+        #expect(bf.allSet)
     }
 
-    func testOutOfBounds() {
+    @Test("Out of bounds safety")
+    func outOfBounds() {
         var bf = Bitfield(count: 10)
         bf.set(100) // should be no-op
-        XCTAssertFalse(bf.get(100))
-        XCTAssertFalse(bf.get(-1))
+        #expect(!bf.get(100))
+        #expect(!bf.get(-1))
     }
 
-    func testDataRoundTrip() {
+    @Test("Data round-trip serialization")
+    func dataRoundTrip() {
         var bf = Bitfield(count: 16)
         bf.set(0)
         bf.set(7)
@@ -42,21 +48,22 @@ final class BitfieldTests: XCTestCase {
         bf.set(15)
 
         let data = bf.toData()
-        XCTAssertEqual(data.count, 2)
+        #expect(data.count == 2)
 
         let bf2 = Bitfield(data: data, count: 16)
-        XCTAssertTrue(bf2.get(0))
-        XCTAssertTrue(bf2.get(7))
-        XCTAssertTrue(bf2.get(8))
-        XCTAssertTrue(bf2.get(15))
-        XCTAssertFalse(bf2.get(1))
-        XCTAssertEqual(bf2.popcount, 4)
+        #expect(bf2.get(0))
+        #expect(bf2.get(7))
+        #expect(bf2.get(8))
+        #expect(bf2.get(15))
+        #expect(!bf2.get(1))
+        #expect(bf2.popcount == 4)
     }
 
-    func testLargeCount() {
+    @Test("Large bit count handling")
+    func largeCount() {
         var bf = Bitfield(count: 1000)
         bf.set(999)
-        XCTAssertTrue(bf.get(999))
-        XCTAssertEqual(bf.popcount, 1)
+        #expect(bf.get(999))
+        #expect(bf.popcount == 1)
     }
 }
