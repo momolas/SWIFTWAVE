@@ -244,6 +244,7 @@ public actor PeerManager {
         }
         removePeerByKey(key)
         await replenishConnections()
+        await fillAllAvailablePeers()
     }
 
     private func handleMessage(_ message: PeerMessage, from key: String) async {
@@ -291,6 +292,9 @@ public actor PeerManager {
                         globalPendingRequests[req] = peers
                     }
                 }
+            }
+            if !dropped.isEmpty {
+                await fillAllAvailablePeers()
             }
 
         case .unchoke:
@@ -506,8 +510,8 @@ public actor PeerManager {
                     }
                 }
 
-                // 2. Otherwise pick a new piece with rarest-first (capped to 32 concurrent pieces to prevent unbounded RAM usage)
-                let maxConcurrentPieces = 32
+                // 2. Otherwise pick a new piece with rarest-first (dynamically scaled to peer count to prevent pipeline starvation)
+                let maxConcurrentPieces = max(128, min(max(1, connections.count) * 8, 512))
                 if targetPiece == nil, inProgress.count < maxConcurrentPieces, let picker = piecePicker {
                     var tempHave = completed
                     for tried in triedPieces {
@@ -619,12 +623,29 @@ public actor PeerManager {
         guard let pm = pieceManager else { return }
         let verified = await pm.completePiece(pieceIndex)
         if verified {
-            // Write to disk
+            // Write to disk in background task to prevent blocking PeerManager actor message processing
             if let dio = diskIO {
-                try? await dio.writePiece(index: pieceIndex, data: data)
+                Task {
+                    try? await dio.writePiece(index: pieceIndex, data: data)
+                }
             }
             await broadcastHave(pieceIndex: UInt32(pieceIndex))
             onPieceCompleted?(pieceIndex)
+            await fillAllAvailablePeers()
+        }
+    }
+
+    /// Prompt all connected unchoked peers with spare pipeline capacity to request blocks.
+    public func fillAllAvailablePeers() async {
+        for key in connectedPeers {
+            guard let state = peerStates[key] else { continue }
+            let choking = await state.getPeerChoking()
+            let allowedFast = await state.allowedFastPieces
+            let isFast = connections[key]?.supportsFastExtension == true
+            let canReq = await state.canRequest
+            if (!choking || (isFast && !allowedFast.isEmpty)) && canReq {
+                await fillRequests(for: key)
+            }
         }
     }
 
@@ -707,7 +728,7 @@ public actor PeerManager {
     /// Check for timed-out requests and cancel them.
     public func checkTimeouts() async {
         for (key, state) in peerStates {
-            let timedOut = await state.timedOutRequests()
+            let timedOut = await state.timedOutRequests(timeout: 6.0)
             for request in timedOut {
                 await state.removePendingRequest(request)
                 if var peers = globalPendingRequests[request] {
@@ -747,6 +768,9 @@ public actor PeerManager {
                 }
             }
         }
+
+        // Awaken any unchoked peers that have idle pipeline capacity
+        await fillAllAvailablePeers()
     }
 
     /// Disconnect all active peers and release resources.

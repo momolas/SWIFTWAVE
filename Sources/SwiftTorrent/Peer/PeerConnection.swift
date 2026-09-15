@@ -48,7 +48,12 @@ public final class PeerConnection: @unchecked Sendable {
             host: NWEndpoint.Host(address),
             port: NWEndpoint.Port(rawValue: port) ?? 6881
         )
-        let tcpParams = NWParameters.tcp
+        let tcpOptions = NWProtocolTCP.Options()
+        tcpOptions.noDelay = true
+        tcpOptions.enableKeepalive = true
+        tcpOptions.keepaliveIdle = 30
+        let tcpParams = NWParameters(tls: nil, tcp: tcpOptions)
+        tcpParams.serviceClass = .responsiveData
         let conn = NWConnection(to: endpoint, using: tcpParams)
 
         lock.withLock {

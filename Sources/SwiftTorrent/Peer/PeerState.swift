@@ -137,7 +137,7 @@ public actor PeerState {
     }
 
     /// Returns requests older than the given timeout interval.
-    public func timedOutRequests(timeout: TimeInterval = 30) -> [BlockRequest] {
+    public func timedOutRequests(timeout: TimeInterval = 6.0) -> [BlockRequest] {
         let cutoff = Date().addingTimeInterval(-timeout)
         return pendingRequests.filter { $0.value < cutoff }.map(\.key)
     }
