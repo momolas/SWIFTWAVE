@@ -21,7 +21,7 @@ public struct SessionSettings: Sendable {
     public init(
         listenPort: UInt16 = 6881,
         maxConnections: Int = 200,
-        maxConnectionsPerTorrent: Int = 50,
+        maxConnectionsPerTorrent: Int = 100,
         downloadRateLimit: Int = 0,
         uploadRateLimit: Int = 0,
         dhtEnabled: Bool = true,

@@ -141,6 +141,7 @@ public actor PeerManager {
                 try await conn.connect()
                 await self.onPeerConnected(key: key, conn: conn)
             } catch {
+                print("[PeerManager] Connection to \(key) failed: \(error)")
                 self.removePeerByKey(key)
                 await self.replenishConnections()
             }
@@ -695,6 +696,19 @@ public actor PeerManager {
     /// Number of peers that completed the TCP handshake.
     public var connectedCount: Int {
         connectedPeers.count
+    }
+
+    /// Snapshot of connection and choking health.
+    public func peerStats() async -> (connected: Int, unchoked: Int, pendingBlocks: Int) {
+        var unchoked = 0
+        for key in connectedPeers {
+            if let state = peerStates[key] {
+                if !(await state.getPeerChoking()) {
+                    unchoked += 1
+                }
+            }
+        }
+        return (connectedPeers.count, unchoked, globalPendingRequests.count)
     }
 
     /// Send interested message to all peers.

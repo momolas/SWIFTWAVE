@@ -159,13 +159,13 @@ final class SessionIntegrationTests: XCTestCase {
         print("Status name:", st.name, "state:", st.state, "pieces:", st.piecesCompleted, "/", st.piecesTotal)
         XCTAssertEqual(st.state, TorrentState.downloading)
 
-        // Wait a few seconds to check if peers connect
-        for i in 1...10 {
+        // Monitor to ensure peers connect and downloading starts
+        for i in 1...15 {
             try await Task.sleep(for: .seconds(1))
-            let peers = await handle.getPeers()
+            let stats = await handle.getPeerStats()
             let currentSt = await handle.status()
-            print("[\(i)s] peers=\(peers.count), rate=\(currentSt.downloadRate), downloaded=\(currentSt.totalDownloaded)")
-            if peers.count > 0 || currentSt.totalDownloaded > 0 {
+            print("[\(i)s] connected=\(stats.connected), unchoked=\(stats.unchoked), pendingBlocks=\(stats.pendingBlocks), rate=\(Int(currentSt.downloadRate / 1024)) KB/s, downloaded=\(currentSt.totalDownloaded / 1024) KB, pieces=\(currentSt.piecesCompleted)/\(currentSt.piecesTotal)")
+            if stats.connected > 0 && (stats.unchoked > 0 || currentSt.totalDownloaded > 0) {
                 break
             }
         }

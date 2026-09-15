@@ -283,6 +283,7 @@ public actor TorrentHandle {
     private func startDownloadMonitor() {
         downloadMonitorTask = Task { [weak self] in
             var lastSampleTime = Date()
+            var lastReplenishAnnounceTime = Date()
 
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(1))
@@ -313,6 +314,34 @@ public actor TorrentHandle {
                     break
                 }
                 await self.peerManager.checkTimeouts()
+
+                // Proactively replenish peers when swarm shrinks
+                let stats = await self.peerManager.peerStats()
+                if stats.connected < 20 {
+                    await self.replenishSwarm(now: now, lastReplenishAnnounceTime: &lastReplenishAnnounceTime)
+                }
+            }
+        }
+    }
+
+    private func replenishSwarm(now: Date, lastReplenishAnnounceTime: inout Date) async {
+        if let dht = dhtNode {
+            await queryDHTPeers(dhtNode: dht)
+        }
+        if now.timeIntervalSince(lastReplenishAnnounceTime) >= 30.0, let trackerMgr = trackerManager {
+            lastReplenishAnnounceTime = now
+            let left = getRemainingBytes()
+            let params = AnnounceParams(
+                infoHash: infoHash, peerID: peerID, port: settings.listenPort,
+                uploaded: totalUploaded, downloaded: totalDownloaded,
+                left: left, numWant: 100
+            )
+            Task { [weak self] in
+                guard let self else { return }
+                let newPeers = await trackerMgr.announceAll(params: params)
+                if !newPeers.isEmpty {
+                    await self.peerManager.addPeers(newPeers)
+                }
             }
         }
     }
@@ -515,6 +544,11 @@ public actor TorrentHandle {
     /// Returns connected peers for UI inspection.
     public func getPeers() async -> [PeerInfo] {
         await peerManager.getPeers()
+    }
+
+    /// Returns connected, unchoked, and in-flight request statistics.
+    public func getPeerStats() async -> (connected: Int, unchoked: Int, pendingBlocks: Int) {
+        await peerManager.peerStats()
     }
 
     /// Returns the list of trackers and their current telemetry.

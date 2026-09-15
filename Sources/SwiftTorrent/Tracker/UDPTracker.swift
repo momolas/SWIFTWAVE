@@ -79,10 +79,17 @@ public final class UDPTracker: Sendable {
         var offset = 20
         while offset + 6 <= announceResponse.count {
             let start = announceResponse.startIndex + offset
-            let ip = "\(announceResponse[start]).\(announceResponse[start + 1]).\(announceResponse[start + 2]).\(announceResponse[start + 3])"
+            let b0 = announceResponse[start]
+            let b1 = announceResponse[start + 1]
+            let b2 = announceResponse[start + 2]
+            let b3 = announceResponse[start + 3]
             let peerPort = announceResponse.readUInt16BE(at: offset + 4)
-            peers.append((ip, peerPort))
             offset += 6
+
+            // Discard invalid IPs and reserved/multicast blocks
+            guard peerPort > 0, b0 != 0, b0 != 127, b0 < 224 else { continue }
+            let ip = "\(b0).\(b1).\(b2).\(b3)"
+            peers.append((ip, peerPort))
         }
 
         return AnnounceResponse(interval: interval, seeders: seeders, leechers: leechers, peers: peers)

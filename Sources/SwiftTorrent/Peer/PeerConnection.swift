@@ -53,7 +53,6 @@ public final class PeerConnection: @unchecked Sendable {
         tcpOptions.enableKeepalive = true
         tcpOptions.keepaliveIdle = 30
         let tcpParams = NWParameters(tls: nil, tcp: tcpOptions)
-        tcpParams.serviceClass = .responsiveData
         let conn = NWConnection(to: endpoint, using: tcpParams)
 
         lock.withLock {
@@ -64,36 +63,46 @@ public final class PeerConnection: @unchecked Sendable {
         try await withThrowingTaskGroup(of: Void.self) { group in
             group.addTask {
                 try await Task.sleep(for: .seconds(4))
-                throw PeerConnectionError.handshakeTimeout
+                throw PeerConnectionError.connectionTimeout
             }
 
             group.addTask {
-                try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
-                    let resumed = AtomicFlag(false)
-                    conn.stateUpdateHandler = { state in
-                        switch state {
-                        case .ready:
-                            if resumed.testAndSet() {
-                                cont.resume()
+                try await withTaskCancellationHandler {
+                    try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+                        let resumed = AtomicFlag(false)
+                        conn.stateUpdateHandler = { state in
+                            switch state {
+                            case .ready:
+                                if resumed.testAndSet() {
+                                    cont.resume()
+                                }
+                            case .failed(let err):
+                                if resumed.testAndSet() {
+                                    cont.resume(throwing: err)
+                                }
+                            case .cancelled:
+                                if resumed.testAndSet() {
+                                    cont.resume(throwing: PeerConnectionError.notConnected)
+                                }
+                            default:
+                                break
                             }
-                        case .failed(let err):
-                            if resumed.testAndSet() {
-                                cont.resume(throwing: err)
-                            }
-                        case .cancelled:
-                            if resumed.testAndSet() {
-                                cont.resume(throwing: PeerConnectionError.notConnected)
-                            }
-                        default:
-                            break
                         }
+                        conn.start(queue: self.queue)
                     }
-                    conn.start(queue: self.queue)
+                } onCancel: {
+                    conn.cancel()
                 }
             }
 
-            try await group.next()
-            group.cancelAll()
+            do {
+                try await group.next()
+                group.cancelAll()
+            } catch {
+                conn.cancel()
+                group.cancelAll()
+                throw error
+            }
         }
 
         // Perform handshake with 4-second timeout
@@ -105,28 +114,38 @@ public final class PeerConnection: @unchecked Sendable {
             }
 
             group.addTask {
-                let reserved = Handshake.defaultReserved(
-                    enableFastExtension: self.enableFastExtension,
-                    enableDHT: self.enableDHT,
-                    isPrivate: self.isPrivate
-                )
-                let handshake = Handshake(infoHash: self.infoHash, peerID: self.peerID, reserved: reserved)
-                let handshakeData = handshake.encode()
-                try await self.sendRaw(connection: conn, data: handshakeData)
+                try await withTaskCancellationHandler {
+                    let reserved = Handshake.defaultReserved(
+                        enableFastExtension: self.enableFastExtension,
+                        enableDHT: self.enableDHT,
+                        isPrivate: self.isPrivate
+                    )
+                    let handshake = Handshake(infoHash: self.infoHash, peerID: self.peerID, reserved: reserved)
+                    let handshakeData = handshake.encode()
+                    try await self.sendRaw(connection: conn, data: handshakeData)
 
-                let rawData = try await self.receiveExact(connection: conn, count: Handshake.length, buffer: &receiveBuffer)
-                guard let decoded = try? Handshake.decode(from: rawData) else {
-                    throw PeerConnectionError.handshakeFailed
+                    let rawData = try await self.receiveExact(connection: conn, count: Handshake.length, buffer: &receiveBuffer)
+                    guard let decoded = try? Handshake.decode(from: rawData) else {
+                        throw PeerConnectionError.handshakeFailed
+                    }
+                    if decoded.infoHash != self.infoHash {
+                        throw PeerConnectionError.handshakeFailed
+                    }
+                    return decoded
+                } onCancel: {
+                    conn.cancel()
                 }
-                if decoded.infoHash != self.infoHash {
-                    throw PeerConnectionError.handshakeFailed
-                }
-                return decoded
             }
 
-            let first = try await group.next()!
-            group.cancelAll()
-            return first
+            do {
+                let first = try await group.next()!
+                group.cancelAll()
+                return first
+            } catch {
+                conn.cancel()
+                group.cancelAll()
+                throw error
+            }
         }
 
         self.remotePeerID = handshakeResp.peerID
@@ -233,6 +252,7 @@ public final class PeerConnection: @unchecked Sendable {
 
 public enum PeerConnectionError: Error {
     case notConnected
+    case connectionTimeout
     case handshakeFailed
     case handshakeTimeout
 }

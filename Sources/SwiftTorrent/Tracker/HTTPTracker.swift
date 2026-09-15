@@ -207,10 +207,16 @@ public struct HTTPTracker: Sendable {
             var offset = 0
             while offset + 6 <= peersData.count {
                 let start = peersData.startIndex + offset
-                let ip = "\(peersData[start]).\(peersData[start+1]).\(peersData[start+2]).\(peersData[start+3])"
+                let b0 = peersData[start]
+                let b1 = peersData[start+1]
+                let b2 = peersData[start+2]
+                let b3 = peersData[start+3]
                 let port = UInt16(peersData[start+4]) << 8 | UInt16(peersData[start+5])
-                peers.append((ip, port))
                 offset += 6
+
+                guard port > 0, b0 != 0, b0 != 127, b0 < 224 else { continue }
+                let ip = "\(b0).\(b1).\(b2).\(b3)"
+                peers.append((ip, port))
             }
         } else if let peersList = value["peers"]?.listValue {
             // Dictionary format
@@ -268,8 +274,8 @@ public struct AnnounceParams: Sendable {
     public let event: String?  // "started", "stopped", "completed"
 
     public init(infoHash: InfoHash, peerID: Data, port: UInt16,
-                uploaded: Int64 = 0, downloaded: Int64 = 0, left: Int64,
-                numWant: Int = 50, event: String? = nil) {
+                uploaded: Int64 = 0, downloaded: Int64 = 0, left: Int64 = 0,
+                numWant: Int = 100, event: String? = nil) {
         self.infoHash = infoHash
         self.peerID = peerID
         self.port = port
