@@ -2,24 +2,25 @@
 import PackageDescription
 
 let package = Package(
-    name: "SwiftTorrent",
+    name: "TorrentKit",
     platforms: [
         .macOS(.v15),
         .iOS(.v18),
         .tvOS(.v18)
     ],
     products: [
-        .library(name: "SwiftTorrent", targets: ["SwiftTorrent"])
+        .library(name: "TorrentKit", targets: ["TorrentKit"])
     ],
     dependencies: [],
     targets: [
         .target(
-            name: "SwiftTorrent",
-            dependencies: []
+            name: "TorrentKit",
+            path: "Sources/SwiftTorrent"
         ),
         .testTarget(
-            name: "SwiftTorrentTests",
-            dependencies: ["SwiftTorrent"]
+            name: "TorrentKitTests",
+            dependencies: ["TorrentKit"],
+            path: "Tests/SwiftTorrentTests"
         ),
     ]
 )
