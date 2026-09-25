@@ -26,7 +26,8 @@ public actor PieceManager {
     /// Mark a piece as being downloaded.
     public func startPiece(_ index: Int) {
         inProgress.insert(index)
-        pieceBuffers[index] = Data()
+        let size = expectedPieceSize(index)
+        pieceBuffers[index] = Data(count: size)
         receivedBlocks[index] = []
     }
 
@@ -36,11 +37,11 @@ public actor PieceManager {
             startPiece(pieceIndex)
         }
         guard var buffer = pieceBuffers[pieceIndex] else { return }
-        let needed = offset + data.count
-        if buffer.count < needed {
-            buffer.append(Data(count: needed - buffer.count))
+        let endOffset = offset + data.count
+        if buffer.count < endOffset {
+            buffer.append(Data(count: endOffset - buffer.count))
         }
-        buffer.replaceSubrange(offset..<offset + data.count, with: data)
+        buffer.replaceSubrange(offset..<endOffset, with: data)
         pieceBuffers[pieceIndex] = buffer
         receivedBlocks[pieceIndex, default: []].insert(offset)
     }
@@ -48,6 +49,21 @@ public actor PieceManager {
     /// Check if a specific block has already been received.
     public func isBlockReceived(pieceIndex: Int, offset: Int) -> Bool {
         receivedBlocks[pieceIndex]?.contains(offset) ?? false
+    }
+
+    /// Returns the missing block offsets (in 16KB increments) for a piece in progress.
+    public func missingBlockOffsets(for pieceIndex: Int) -> [Int] {
+        let size = expectedPieceSize(pieceIndex)
+        let received = receivedBlocks[pieceIndex] ?? []
+        var missing: [Int] = []
+        var offset = 0
+        while offset < size {
+            if !received.contains(offset) {
+                missing.append(offset)
+            }
+            offset += 16384
+        }
+        return missing
     }
 
     /// Check if all expected blocks for a piece have been received.

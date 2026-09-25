@@ -129,7 +129,7 @@ public actor PeerManager {
         connectingKeys.insert(key)
 
         // Set up sequential message pipeline per peer
-        let (stream, continuation) = AsyncStream<PeerMessage>.makeStream(bufferingPolicy: .bufferingNewest(256))
+        let (stream, continuation) = AsyncStream<PeerMessage>.makeStream(bufferingPolicy: .unbounded)
         peerMessageContinuations[key] = continuation
 
         conn.onMessage = { message in
@@ -212,8 +212,10 @@ public actor PeerManager {
             try? await conn.send(.port(port))
         }
 
-        // 3. Send interested
+        // 3. Send interested and unchoke proactively
         try? await conn.send(.interested)
+        await state.setAmChoking(false)
+        try? await conn.send(.unchoke)
 
         // 4. BEP-10 Extended Handshake (ut_metadata and ut_pex)
         if conn.supportsExtensions {
@@ -493,165 +495,128 @@ public actor PeerManager {
         let completed = await pm.getCompleted()
         let inProgress = await pm.getInProgress()
         let peerBF = await state.getPeerBitfield()
+        let isEndgame = (completed.popcount + inProgress.count >= (pieceCount > 0 ? pieceCount : 1)) || (completed.popcount >= Int(Double(pieceCount) * 0.95))
 
         var triedPieces: Set<Int> = []
 
         while await state.canRequest {
-            var targetPiece: Int? = nil
+            var requestedAny = false
 
+            // 1. Fill missing blocks from existing in-progress pieces that this peer has
+            let candidatePieces: [Int]
             if peerChoking {
-                // When choked, we can ONLY request pieces that the peer marked as Allowed Fast
-                for afPiece in allowedFast {
-                    if !completed.get(afPiece) && peerBF.get(afPiece) && !triedPieces.contains(afPiece) {
-                        if !(await isPieceFullyRequested(afPiece, pieceManager: pm)) {
-                            targetPiece = afPiece
-                            break
-                        } else {
-                            triedPieces.insert(afPiece)
-                        }
-                    }
-                }
+                candidatePieces = Array(allowedFast.filter { !completed.get($0) && peerBF.get($0) && !triedPieces.contains($0) })
             } else {
-                // 1. Try unfinished pieces in progress first that this peer has
-                for inProgIdx in inProgress {
-                    if !completed.get(inProgIdx) && peerBF.get(inProgIdx) && !triedPieces.contains(inProgIdx) {
-                        if !(await isPieceFullyRequested(inProgIdx, pieceManager: pm)) {
-                            targetPiece = inProgIdx
-                            break
-                        } else {
-                            triedPieces.insert(inProgIdx)
-                        }
+                candidatePieces = Array(inProgress.filter { !completed.get($0) && peerBF.get($0) && !triedPieces.contains($0) })
+            }
+
+            for inProgIdx in candidatePieces {
+                guard await state.canRequest else { break }
+                let missing = await pm.missingBlockOffsets(for: inProgIdx)
+                if missing.isEmpty {
+                    triedPieces.insert(inProgIdx)
+                    continue
+                }
+
+                let pieceSize = await pm.expectedPieceSize(inProgIdx)
+                var requestedInPiece = false
+
+                for offset in missing {
+                    guard await state.canRequest else { break }
+                    let length = min(16384, pieceSize - offset)
+                    let request = PeerState.BlockRequest(pieceIndex: inProgIdx, offset: offset, length: length)
+                    let peersWithBlock = globalPendingRequests[request] ?? []
+
+                    let shouldRequest: Bool
+                    if peersWithBlock.contains(key) {
+                        shouldRequest = false
+                    } else if peersWithBlock.isEmpty {
+                        shouldRequest = true
+                    } else if (missing.count <= 3 || isEndgame) && peersWithBlock.count < 2 {
+                        // Tail-end stealing: if <= 3 blocks remain missing in this piece, allow duplicate request
+                        shouldRequest = true
+                    } else {
+                        shouldRequest = false
+                    }
+
+                    if shouldRequest {
+                        var currentSet = peersWithBlock
+                        currentSet.insert(key)
+                        globalPendingRequests[request] = currentSet
+
+                        await state.addPendingRequest(request)
+                        try? await conn.send(.request(
+                            index: UInt32(inProgIdx),
+                            begin: UInt32(offset),
+                            length: UInt32(length)
+                        ))
+                        requestedInPiece = true
+                        requestedAny = true
                     }
                 }
 
-                // 2. Otherwise pick a new piece with rarest-first (dynamically scaled to peer count to prevent pipeline starvation)
+                if !requestedInPiece {
+                    triedPieces.insert(inProgIdx)
+                }
+            }
+
+            // 2. Pick a new rarest-first piece if unchoked and we still have pipeline capacity
+            let canRequestMore = await state.canRequest
+            if !peerChoking && canRequestMore, let picker = piecePicker {
                 let maxConcurrentPieces = max(128, min(max(1, connections.count) * 8, 512))
-                if targetPiece == nil, inProgress.count < maxConcurrentPieces, let picker = piecePicker {
+                let allExistingRequested = candidatePieces.allSatisfy { triedPieces.contains($0) }
+                // Only allow starting a new piece if under limit OR if all open pieces are already requested
+                if inProgress.count < maxConcurrentPieces || allExistingRequested {
                     var tempHave = completed
-                    for tried in triedPieces {
-                        tempHave.set(tried)
-                    }
-                    for inProg in inProgress {
-                        tempHave.set(inProg)
-                    }
-                    if let picked = picker.pick(have: tempHave, peerHas: peerBF) {
-                        targetPiece = picked
-                    }
-                }
-            }
+                    for tried in triedPieces { tempHave.set(tried) }
+                    for inProg in inProgress { tempHave.set(inProg) }
 
-            // 3. Endgame Mode: If all pieces are either completed or in progress, allow duplicate requests for missing blocks
-            let isEndgame = (completed.popcount + inProgress.count >= (pieceCount > 0 ? pieceCount : 1)) || (completed.popcount >= Int(Double(pieceCount) * 0.95))
-            if targetPiece == nil && isEndgame {
-                for inProgIdx in inProgress {
-                    if !completed.get(inProgIdx) && peerBF.get(inProgIdx) && !triedPieces.contains(inProgIdx) {
-                        if !(await isPieceFullyRequested(inProgIdx, pieceManager: pm, isEndgame: true, peerKey: key)) {
-                            targetPiece = inProgIdx
-                            break
-                        } else {
-                            triedPieces.insert(inProgIdx)
+                    if let picked = picker.pick(have: tempHave, peerHas: peerBF) {
+                        triedPieces.insert(picked)
+                        await pm.startPiece(picked)
+                        let pieceSize = await pm.expectedPieceSize(picked)
+                        var offset = 0
+                        while offset < pieceSize {
+                            guard await state.canRequest else { break }
+                            let length = min(16384, pieceSize - offset)
+                            let request = PeerState.BlockRequest(pieceIndex: picked, offset: offset, length: length)
+                            var currentSet = globalPendingRequests[request] ?? []
+                            currentSet.insert(key)
+                            globalPendingRequests[request] = currentSet
+
+                            await state.addPendingRequest(request)
+                            try? await conn.send(.request(
+                                index: UInt32(picked),
+                                begin: UInt32(offset),
+                                length: UInt32(length)
+                            ))
+                            offset += length
+                            requestedAny = true
                         }
                     }
                 }
             }
 
-            guard let pieceIndex = targetPiece else { break }
-            triedPieces.insert(pieceIndex)
-
-            if await pm.hasPiece(pieceIndex) { continue }
-
-            if !(await pm.isInProgress(pieceIndex)) {
-                await pm.startPiece(pieceIndex)
-            }
-
-            let pieceSize = await pm.expectedPieceSize(pieceIndex)
-            let blockSize = 16384
-            var offset = 0
-
-            while offset < pieceSize {
-                let canReq = await state.canRequest
-                guard canReq else { break }
-
-                let alreadyReceived = await pm.isBlockReceived(pieceIndex: pieceIndex, offset: offset)
-                let length = min(blockSize, pieceSize - offset)
-                let request = PeerState.BlockRequest(pieceIndex: pieceIndex, offset: offset, length: length)
-                let peersWithBlock = globalPendingRequests[request] ?? []
-                let alreadyPendingOnThisPeer = peersWithBlock.contains(key)
-                let alreadyPendingGlobally = !peersWithBlock.isEmpty
-
-                // In normal mode: request if not received and not pending on ANY peer.
-                // In endgame mode: request if not received and not yet pending on THIS peer (max 2-3 duplicate peers).
-                let shouldRequest: Bool
-                if alreadyReceived || alreadyPendingOnThisPeer {
-                    shouldRequest = false
-                } else if !alreadyPendingGlobally {
-                    shouldRequest = true
-                } else if isEndgame && peersWithBlock.count < 3 {
-                    shouldRequest = true
-                } else {
-                    shouldRequest = false
-                }
-
-                if shouldRequest {
-                    var currentSet = globalPendingRequests[request] ?? []
-                    currentSet.insert(key)
-                    globalPendingRequests[request] = currentSet
-
-                    await state.addPendingRequest(request)
-                    try? await conn.send(.request(
-                        index: UInt32(pieceIndex),
-                        begin: UInt32(offset),
-                        length: UInt32(length)
-                    ))
-                }
-                offset += length
+            // Break if no request was issued in this pass to prevent infinite loop
+            if !requestedAny {
+                break
             }
         }
-    }
-
-    private func isPieceFullyRequested(_ pieceIndex: Int, pieceManager: PieceManager, isEndgame: Bool = false, peerKey: String? = nil) async -> Bool {
-        let pieceSize = await pieceManager.expectedPieceSize(pieceIndex)
-        let blockSize = 16384
-        var offset = 0
-        while offset < pieceSize {
-            let length = min(blockSize, pieceSize - offset)
-            let request = PeerState.BlockRequest(pieceIndex: pieceIndex, offset: offset, length: length)
-            let received = await pieceManager.isBlockReceived(pieceIndex: pieceIndex, offset: offset)
-            let peers = globalPendingRequests[request] ?? []
-            if !received {
-                if !isEndgame {
-                    if peers.isEmpty { return false }
-                } else {
-                    // In endgame mode, piece is not fully requested from this peer's perspective if this peer hasn't requested it yet
-                    if let peerKey, !peers.contains(peerKey) && peers.count < 3 {
-                        return false
-                    }
-                }
-            }
-            offset += blockSize
-        }
-        return true
     }
 
     private func onPieceComplete(index pieceIndex: Int, data: Data) async {
         guard let pm = pieceManager else { return }
         let verified = await pm.completePiece(pieceIndex)
-        if verified {
-            if let dio = diskIO {
-                do {
-                    try await dio.writePiece(index: pieceIndex, data: data)
-                    await broadcastHave(pieceIndex: UInt32(pieceIndex))
-                    onPieceCompleted?(pieceIndex)
-                    await fillAllAvailablePeers()
-                } catch {
-                    print("[PeerManager] Disk write failure on piece \(pieceIndex): \(error)")
-                }
-            } else {
-                await broadcastHave(pieceIndex: UInt32(pieceIndex))
-                onPieceCompleted?(pieceIndex)
-                await fillAllAvailablePeers()
-            }
+        guard verified else { return }
+
+        // Await disk persistence before broadcasting piece availability (BEP-3 / AGENTS.md)
+        if let dio = diskIO {
+            try? await dio.writePiece(index: pieceIndex, data: data)
         }
+
+        await broadcastHave(pieceIndex: UInt32(pieceIndex))
+        onPieceCompleted?(pieceIndex)
+        await fillAllAvailablePeers()
     }
 
     /// Prompt all connected unchoked peers with spare pipeline capacity to request blocks.
@@ -733,38 +698,44 @@ public actor PeerManager {
         return (connectedPeers.count, unchoked, globalPendingRequests.count)
     }
 
-    /// Send interested message to all peers.
+    /// Send interested message to all peers concurrently.
     public func sendInterestedToAll() async {
         let msg = PeerMessage.interested
         for (key, conn) in connections {
             guard connectedPeers.contains(key) else { continue }
-            try? await conn.send(msg)
+            Task { [conn] in
+                try? await conn.send(msg)
+            }
         }
     }
 
-    /// Broadcast a have message to all peers.
+    /// Broadcast a have message to all peers concurrently without blocking the actor loop.
     public func broadcastHave(pieceIndex: UInt32) async {
         let msg = PeerMessage.have(pieceIndex: pieceIndex)
         for (key, conn) in connections {
             guard connectedPeers.contains(key) else { continue }
-            try? await conn.send(msg)
+            Task { [conn] in
+                try? await conn.send(msg)
+            }
         }
     }
 
-    /// Broadcast our complete bitfield to all peers.
+    /// Broadcast our complete bitfield to all peers concurrently.
     public func broadcastBitfield(_ bitfield: Bitfield) async {
         guard !bitfield.isEmpty else { return }
         let msg = PeerMessage.bitfield(bitfield.toData())
         for (key, conn) in connections {
             guard connectedPeers.contains(key) else { continue }
-            try? await conn.send(msg)
+            Task { [conn] in
+                try? await conn.send(msg)
+            }
         }
     }
 
     /// Check for timed-out requests and cancel them.
     public func checkTimeouts() async {
         for (key, state) in peerStates {
-            let timedOut = await state.timedOutRequests(timeout: 6.0)
+            let timedOut = await state.timedOutRequests(timeout: 4.0)
             for request in timedOut {
                 await state.removePendingRequest(request)
                 if var peers = globalPendingRequests[request] {
@@ -782,27 +753,31 @@ public actor PeerManager {
         }
 
         // Self-healing: purge any global requests for inactive or desynced peers
-        var orphaned: [(PeerState.BlockRequest, String)] = []
-        for (req, peerKeys) in globalPendingRequests {
-            for peerKey in peerKeys {
-                if let pState = peerStates[peerKey] {
-                    if !(await pState.hasPending(req)) {
-                        orphaned.append((req, peerKey))
-                    }
+        // Batch query active pending requests once per peer instead of N*M actor hops
+        var validRequestsPerPeer: [String: Set<PeerState.BlockRequest>] = [:]
+        for (key, state) in peerStates {
+            let pending = await state.getPendingRequests()
+            validRequestsPerPeer[key] = Set(pending.keys)
+        }
+
+        var emptyKeys: [PeerState.BlockRequest] = []
+        for (req, peers) in globalPendingRequests {
+            var updatedPeers = peers
+            for peerKey in peers {
+                if let peerValid = validRequestsPerPeer[peerKey], peerValid.contains(req) {
+                    // valid pending request
                 } else {
-                    orphaned.append((req, peerKey))
+                    updatedPeers.remove(peerKey)
                 }
+            }
+            if updatedPeers.isEmpty {
+                emptyKeys.append(req)
+            } else if updatedPeers.count != peers.count {
+                globalPendingRequests[req] = updatedPeers
             }
         }
-        for (req, peerKey) in orphaned {
-            if var peers = globalPendingRequests[req] {
-                peers.remove(peerKey)
-                if peers.isEmpty {
-                    globalPendingRequests.removeValue(forKey: req)
-                } else {
-                    globalPendingRequests[req] = peers
-                }
-            }
+        for req in emptyKeys {
+            globalPendingRequests.removeValue(forKey: req)
         }
 
         // Awaken any unchoked peers that have idle pipeline capacity

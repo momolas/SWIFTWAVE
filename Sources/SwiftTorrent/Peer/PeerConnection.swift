@@ -77,6 +77,7 @@ public final class PeerConnection: Sendable {
         tcpOptions.enableKeepalive = true
         tcpOptions.keepaliveIdle = 30
         let tcpParams = NWParameters(tls: nil, tcp: tcpOptions)
+        tcpParams.serviceClass = .responsiveData
         let conn = NWConnection(to: endpoint, using: tcpParams)
 
         state.withLock {
@@ -226,7 +227,7 @@ public final class PeerConnection: Sendable {
         while buffer.count < count {
             let needed = count - buffer.count
             let chunk = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Data, Error>) in
-                connection.receive(minimumIncompleteLength: 1, maximumLength: max(needed, 65536)) { data, _, isComplete, error in
+                connection.receive(minimumIncompleteLength: 1, maximumLength: max(needed, 131072)) { data, _, isComplete, error in
                     if let error {
                         continuation.resume(throwing: error)
                     } else if let data, !data.isEmpty {
