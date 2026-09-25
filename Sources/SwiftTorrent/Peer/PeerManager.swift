@@ -38,7 +38,6 @@ public actor PeerManager {
     public init(
         infoHash: Data,
         peerID: Data,
-        group: Any? = nil,
         maxConnections: Int = 50,
         isPrivate: Bool = false,
         dhtPort: UInt16? = nil
@@ -670,10 +669,10 @@ public actor PeerManager {
         Array(peerInfos.values)
     }
 
-    /// Number of active connections.
-    /// Returns snapshot of all currently known peers.
+    /// Snapshot of all currently known peers.
+    @inlinable
     public func getPeers() -> [PeerInfo] {
-        Array(peerInfos.values)
+        peers()
     }
 
     public var connectionCount: Int {

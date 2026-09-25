@@ -56,87 +56,87 @@ public enum PeerMessage: Equatable, Sendable {
         var data = Data()
         switch self {
         case .keepAlive:
-            data.append(contentsOf: UInt32(0).bigEndianBytes)
+            data.append(bigEndian: UInt32(0))
 
         case .choke:
-            data.append(contentsOf: UInt32(1).bigEndianBytes)
+            data.append(bigEndian: UInt32(1))
             data.append(Self.chokeID)
 
         case .unchoke:
-            data.append(contentsOf: UInt32(1).bigEndianBytes)
+            data.append(bigEndian: UInt32(1))
             data.append(Self.unchokeID)
 
         case .interested:
-            data.append(contentsOf: UInt32(1).bigEndianBytes)
+            data.append(bigEndian: UInt32(1))
             data.append(Self.interestedID)
 
         case .notInterested:
-            data.append(contentsOf: UInt32(1).bigEndianBytes)
+            data.append(bigEndian: UInt32(1))
             data.append(Self.notInterestedID)
 
         case .have(let index):
-            data.append(contentsOf: UInt32(5).bigEndianBytes)
+            data.append(bigEndian: UInt32(5))
             data.append(Self.haveID)
-            data.append(contentsOf: index.bigEndianBytes)
+            data.append(bigEndian: index)
 
         case .bitfield(let bf):
-            data.append(contentsOf: UInt32(1 + UInt32(bf.count)).bigEndianBytes)
+            data.append(bigEndian: UInt32(1 + UInt32(bf.count)))
             data.append(Self.bitfieldID)
             data.append(bf)
 
         case .request(let index, let begin, let length):
-            data.append(contentsOf: UInt32(13).bigEndianBytes)
+            data.append(bigEndian: UInt32(13))
             data.append(Self.requestID)
-            data.append(contentsOf: index.bigEndianBytes)
-            data.append(contentsOf: begin.bigEndianBytes)
-            data.append(contentsOf: length.bigEndianBytes)
+            data.append(bigEndian: index)
+            data.append(bigEndian: begin)
+            data.append(bigEndian: length)
 
         case .piece(let index, let begin, let block):
-            data.append(contentsOf: UInt32(9 + UInt32(block.count)).bigEndianBytes)
+            data.append(bigEndian: UInt32(9 + UInt32(block.count)))
             data.append(Self.pieceID)
-            data.append(contentsOf: index.bigEndianBytes)
-            data.append(contentsOf: begin.bigEndianBytes)
+            data.append(bigEndian: index)
+            data.append(bigEndian: begin)
             data.append(block)
 
         case .cancel(let index, let begin, let length):
-            data.append(contentsOf: UInt32(13).bigEndianBytes)
+            data.append(bigEndian: UInt32(13))
             data.append(Self.cancelID)
-            data.append(contentsOf: index.bigEndianBytes)
-            data.append(contentsOf: begin.bigEndianBytes)
-            data.append(contentsOf: length.bigEndianBytes)
+            data.append(bigEndian: index)
+            data.append(bigEndian: begin)
+            data.append(bigEndian: length)
 
         case .port(let port):
-            data.append(contentsOf: UInt32(3).bigEndianBytes)
+            data.append(bigEndian: UInt32(3))
             data.append(Self.portID)
-            data.append(contentsOf: port.bigEndianBytes)
+            data.append(bigEndian: port)
 
         case .suggestPiece(let index):
-            data.append(contentsOf: UInt32(5).bigEndianBytes)
+            data.append(bigEndian: UInt32(5))
             data.append(Self.suggestPieceID)
-            data.append(contentsOf: index.bigEndianBytes)
+            data.append(bigEndian: index)
 
         case .haveAll:
-            data.append(contentsOf: UInt32(1).bigEndianBytes)
+            data.append(bigEndian: UInt32(1))
             data.append(Self.haveAllID)
 
         case .haveNone:
-            data.append(contentsOf: UInt32(1).bigEndianBytes)
+            data.append(bigEndian: UInt32(1))
             data.append(Self.haveNoneID)
 
         case .rejectRequest(let index, let begin, let length):
-            data.append(contentsOf: UInt32(13).bigEndianBytes)
+            data.append(bigEndian: UInt32(13))
             data.append(Self.rejectRequestID)
-            data.append(contentsOf: index.bigEndianBytes)
-            data.append(contentsOf: begin.bigEndianBytes)
-            data.append(contentsOf: length.bigEndianBytes)
+            data.append(bigEndian: index)
+            data.append(bigEndian: begin)
+            data.append(bigEndian: length)
 
         case .allowedFast(let index):
-            data.append(contentsOf: UInt32(5).bigEndianBytes)
+            data.append(bigEndian: UInt32(5))
             data.append(Self.allowedFastID)
-            data.append(contentsOf: index.bigEndianBytes)
+            data.append(bigEndian: index)
 
         case .extended(let id, let payload):
-            data.append(contentsOf: UInt32(2 + UInt32(payload.count)).bigEndianBytes)
+            data.append(bigEndian: UInt32(2 + UInt32(payload.count)))
             data.append(Self.extendedID)
             data.append(id)
             data.append(payload)
@@ -144,32 +144,32 @@ public enum PeerMessage: Equatable, Sendable {
         // BEP-52 messages
         case .hashRequest(let piecesRoot, let baseLayer, let index, let length, let proofLayers):
             // payload: 32-byte root + 4x UInt32 = 32 + 16 = 48 bytes + 1 ID
-            data.append(contentsOf: UInt32(49).bigEndianBytes)
+            data.append(bigEndian: UInt32(49))
             data.append(Self.hashRequestID)
             data.append(piecesRoot)
-            data.append(contentsOf: baseLayer.bigEndianBytes)
-            data.append(contentsOf: index.bigEndianBytes)
-            data.append(contentsOf: length.bigEndianBytes)
-            data.append(contentsOf: proofLayers.bigEndianBytes)
+            data.append(bigEndian: baseLayer)
+            data.append(bigEndian: index)
+            data.append(bigEndian: length)
+            data.append(bigEndian: proofLayers)
 
         case .hashReject(let piecesRoot, let baseLayer, let index, let length, let proofLayers):
-            data.append(contentsOf: UInt32(49).bigEndianBytes)
+            data.append(bigEndian: UInt32(49))
             data.append(Self.hashRejectID)
             data.append(piecesRoot)
-            data.append(contentsOf: baseLayer.bigEndianBytes)
-            data.append(contentsOf: index.bigEndianBytes)
-            data.append(contentsOf: length.bigEndianBytes)
-            data.append(contentsOf: proofLayers.bigEndianBytes)
+            data.append(bigEndian: baseLayer)
+            data.append(bigEndian: index)
+            data.append(bigEndian: length)
+            data.append(bigEndian: proofLayers)
 
         case .hashes(let piecesRoot, let baseLayer, let index, let length, let proofLayers, let hashes):
             let payloadLen = UInt32(49 + hashes.count)
-            data.append(contentsOf: payloadLen.bigEndianBytes)
+            data.append(bigEndian: payloadLen)
             data.append(Self.hashesID)
             data.append(piecesRoot)
-            data.append(contentsOf: baseLayer.bigEndianBytes)
-            data.append(contentsOf: index.bigEndianBytes)
-            data.append(contentsOf: length.bigEndianBytes)
-            data.append(contentsOf: proofLayers.bigEndianBytes)
+            data.append(bigEndian: baseLayer)
+            data.append(bigEndian: index)
+            data.append(bigEndian: length)
+            data.append(bigEndian: proofLayers)
             data.append(hashes)
         }
         return data
@@ -309,38 +309,3 @@ public enum PeerMessageError: Error, Sendable, Equatable, LocalizedError {
 }
 
 
-// MARK: - Data helpers
-
-extension UInt32 {
-    var bigEndianBytes: [UInt8] {
-        let be = self.bigEndian
-        return withUnsafeBytes(of: be) { Array($0) }
-    }
-}
-
-extension UInt16 {
-    var bigEndianBytes: [UInt8] {
-        let be = self.bigEndian
-        return withUnsafeBytes(of: be) { Array($0) }
-    }
-}
-
-extension Data {
-    func readUInt32BE(at offset: Int) -> UInt32 {
-        let start = self.startIndex + offset
-        var value: UInt32 = 0
-        _ = Swift.withUnsafeMutableBytes(of: &value) { buf in
-            self.copyBytes(to: buf, from: start..<start+4)
-        }
-        return UInt32(bigEndian: value)
-    }
-
-    func readUInt16BE(at offset: Int) -> UInt16 {
-        let start = self.startIndex + offset
-        var value: UInt16 = 0
-        _ = Swift.withUnsafeMutableBytes(of: &value) { buf in
-            self.copyBytes(to: buf, from: start..<start+2)
-        }
-        return UInt16(bigEndian: value)
-    }
-}

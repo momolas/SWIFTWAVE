@@ -41,7 +41,7 @@ public struct NodeID: Hashable, Sendable, CustomStringConvertible {
     }
 
     public var description: String {
-        bytes.map { ($0 < 16 ? "0" : "") + String($0, radix: 16) }.joined()
+        bytes.hexEncodedString
     }
 }
 

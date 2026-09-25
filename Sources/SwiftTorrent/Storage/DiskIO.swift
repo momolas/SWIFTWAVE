@@ -82,16 +82,16 @@ public actor DiskIO {
         return resolvedPath
     }
 
+    /// Resolves file slices with sanitized paths for a given piece index.
+    private func resolvedSlices(forPiece index: Int) throws -> [(path: String, offset: Int64, length: Int)] {
+        try fileStorage.fileSlices(forPiece: index).map {
+            (path: try resolvedPath(for: $0.path), offset: $0.offset, length: $0.length)
+        }
+    }
+
     /// Write a piece to disk.
     public func writePiece(index: Int, data: Data) async throws {
-        let slices = fileStorage.fileSlices(forPiece: index)
-        var resolvedSlicesList: [(path: String, offset: Int64, length: Int)] = []
-        for slice in slices {
-            let path = try resolvedPath(for: slice.path)
-            resolvedSlicesList.append((path: path, offset: slice.offset, length: slice.length))
-        }
-        let resolvedSlices = resolvedSlicesList
-
+        let resolvedSlices = try resolvedSlices(forPiece: index)
         let usePart = self.usePartExtension
         try await runIO {
             var dataOffset = 0
@@ -121,14 +121,7 @@ public actor DiskIO {
 
     /// Read a piece from disk.
     public func readPiece(index: Int) async throws -> Data {
-        let slices = fileStorage.fileSlices(forPiece: index)
-        var resolvedSlicesList: [(path: String, offset: Int64, length: Int)] = []
-        for slice in slices {
-            let path = try resolvedPath(for: slice.path)
-            resolvedSlicesList.append((path: path, offset: slice.offset, length: slice.length))
-        }
-        let resolvedSlices = resolvedSlicesList
-
+        let resolvedSlices = try resolvedSlices(forPiece: index)
         let usePart = self.usePartExtension
         return try await runIO {
             var result = Data()

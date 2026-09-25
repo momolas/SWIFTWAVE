@@ -67,7 +67,7 @@ public final class PeerConnection: Sendable {
         self.enableDHT = enableDHT
     }
 
-    public func connect(on group: Any? = nil) async throws {
+    public func connect() async throws {
         let endpoint = NWEndpoint.hostPort(
             host: NWEndpoint.Host(address),
             port: NWEndpoint.Port(rawValue: port) ?? 6881
@@ -299,18 +299,3 @@ public enum PeerConnectionError: Error, Sendable, Equatable, LocalizedError {
     }
 }
 
-private final class AtomicFlag: Sendable {
-    private let state: Mutex<Bool>
-
-    init(_ value: Bool = false) {
-        self.state = Mutex(value)
-    }
-
-    func testAndSet() -> Bool {
-        state.withLock { value in
-            if value { return false }
-            value = true
-            return true
-        }
-    }
-}

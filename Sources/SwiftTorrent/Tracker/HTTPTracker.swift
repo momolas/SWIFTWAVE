@@ -16,16 +16,7 @@ public struct HTTPTracker: Sendable {
 
         // Properly URL encode binary fields without double percent-encoding
         let infoHashEncoded = params.infoHash.urlEncoded
-        let peerIDEncoded = params.peerID.map { byte -> String in
-            switch byte {
-            case 0x30...0x39, 0x41...0x5A, 0x61...0x7A, 0x2D, 0x2E, 0x5F, 0x7E:
-                return String(UnicodeScalar(byte))
-            default:
-                let hi = byte >> 4
-                let lo = byte & 0x0F
-                return "%" + String(hi, radix: 16).uppercased() + String(lo, radix: 16).uppercased()
-            }
-        }.joined()
+        let peerIDEncoded = params.peerID.rfc3986PercentEncoded
 
         var queryParts = [
             "info_hash=\(infoHashEncoded)",

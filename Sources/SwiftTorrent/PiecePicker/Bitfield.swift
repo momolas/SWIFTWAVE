@@ -118,11 +118,7 @@ public struct Bitfield: Sendable, Equatable, Hashable {
     }
     /// Convert bitfield to hex string (compatible with ROUGHCOMPUTER format).
     public func toHex() -> String {
-        toData().map { byte in
-            let hi = byte >> 4
-            let lo = byte & 0x0F
-            return String(hi, radix: 16) + String(lo, radix: 16)
-        }.joined()
+        toData().hexEncodedString
     }
 
     /// Compute completion ratio per cell bucket for UI grid visualization directly from this bitfield.

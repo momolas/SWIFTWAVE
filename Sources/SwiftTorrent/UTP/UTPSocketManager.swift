@@ -1,5 +1,6 @@
 import Foundation
 import Network
+import Synchronization
 
 /// Manages uTP connections multiplexed over a single UDP socket (BEP 29).
 public actor UTPSocketManager {
@@ -8,7 +9,7 @@ public actor UTPSocketManager {
     private var listener: NWListener?
     private let port: UInt16
 
-    public init(port: UInt16, group: Any? = nil) {
+    public init(port: UInt16) {
         self.port = port
     }
 
@@ -59,7 +60,7 @@ public actor UTPSocketManager {
 }
 
 /// Represents a single uTP connection (state machine).
-public final class UTPConnection: @unchecked Sendable {
+public final class UTPConnection: Sendable {
     public enum State: Sendable {
         case idle
         case synSent
@@ -73,16 +74,19 @@ public final class UTPConnection: @unchecked Sendable {
     public let connectionID: UInt16
     public let isInitiator: Bool
 
-    private let lock = NSLock()
-    private var _state: State = .idle
-    private var _congestion = LEDBATCongestionControl()
-    private var _sendSeqNr: UInt16 = 1
-    private var _ackNr: UInt16 = 0
-    private var _sendBuffer: [UTPPacket] = []
-    private var _receiveBuffer: [UInt16: Data] = [:]
+    private struct StateData: Sendable {
+        var state: State = .idle
+        var congestion = LEDBATCongestionControl()
+        var sendSeqNr: UInt16 = 1
+        var ackNr: UInt16 = 0
+        var sendBuffer: [UTPPacket] = []
+        var receiveBuffer: [UInt16: Data] = [:]
+    }
+
+    private let innerState: Mutex<StateData>
 
     public var state: State {
-        lock.withLock { _state }
+        innerState.withLock { $0.state }
     }
 
     public init(
@@ -95,113 +99,114 @@ public final class UTPConnection: @unchecked Sendable {
         self.remotePort = remotePort
         self.connectionID = connectionID
         self.isInitiator = isInitiator
+        self.innerState = Mutex(StateData())
     }
 
     /// Build a SYN packet to initiate a connection.
     public func buildSynPacket() -> UTPPacket {
-        lock.withLock {
-            _state = .synSent
+        innerState.withLock { state in
+            state.state = .synSent
             let ts = currentTimestampMicroseconds()
             let pkt = UTPPacket(
                 type: .syn,
                 connectionID: connectionID,
                 timestampMicroseconds: ts,
-                windowSize: UInt32(_congestion.cwnd),
-                sequenceNumber: _sendSeqNr
+                windowSize: UInt32(state.congestion.cwnd),
+                sequenceNumber: state.sendSeqNr
             )
-            _sendSeqNr &+= 1
+            state.sendSeqNr &+= 1
             return pkt
         }
     }
 
     /// Build a DATA packet with the given payload.
     public func buildDataPacket(payload: Data) -> UTPPacket {
-        lock.withLock {
+        innerState.withLock { state in
             let ts = currentTimestampMicroseconds()
             let pkt = UTPPacket(
                 type: .data,
                 connectionID: connectionID,
                 timestampMicroseconds: ts,
-                windowSize: UInt32(_congestion.cwnd),
-                sequenceNumber: _sendSeqNr,
-                ackNumber: _ackNr,
+                windowSize: UInt32(state.congestion.cwnd),
+                sequenceNumber: state.sendSeqNr,
+                ackNumber: state.ackNr,
                 payload: payload
             )
-            _sendSeqNr &+= 1
-            _congestion.onSend(bytes: payload.count)
+            state.sendSeqNr &+= 1
+            state.congestion.onSend(bytes: payload.count)
             return pkt
         }
     }
 
     /// Build a STATE (ACK) packet.
     public func buildStatePacket() -> UTPPacket {
-        lock.withLock {
+        innerState.withLock { state in
             let ts = currentTimestampMicroseconds()
             return UTPPacket(
                 type: .state,
                 connectionID: connectionID,
                 timestampMicroseconds: ts,
-                windowSize: UInt32(_congestion.cwnd),
-                sequenceNumber: _sendSeqNr,
-                ackNumber: _ackNr
+                windowSize: UInt32(state.congestion.cwnd),
+                sequenceNumber: state.sendSeqNr,
+                ackNumber: state.ackNr
             )
         }
     }
 
     /// Build a FIN packet.
     public func buildFinPacket() -> UTPPacket {
-        lock.withLock {
-            _state = .finSent
+        innerState.withLock { state in
+            state.state = .finSent
             let ts = currentTimestampMicroseconds()
             let pkt = UTPPacket(
                 type: .fin,
                 connectionID: connectionID,
                 timestampMicroseconds: ts,
-                windowSize: UInt32(_congestion.cwnd),
-                sequenceNumber: _sendSeqNr,
-                ackNumber: _ackNr
+                windowSize: UInt32(state.congestion.cwnd),
+                sequenceNumber: state.sendSeqNr,
+                ackNumber: state.ackNr
             )
-            _sendSeqNr &+= 1
+            state.sendSeqNr &+= 1
             return pkt
         }
     }
 
     /// Handle an incoming packet from the remote peer.
     public func handlePacket(_ packet: UTPPacket) {
-        lock.withLock {
+        innerState.withLock { state in
             switch packet.type {
             case .syn:
                 if !isInitiator {
-                    _ackNr = packet.sequenceNumber
-                    _state = .connected
+                    state.ackNr = packet.sequenceNumber
+                    state.state = .connected
                 }
             case .state:
-                if _state == .synSent {
-                    _state = .connected
-                    _ackNr = packet.sequenceNumber &- 1
+                if state.state == .synSent {
+                    state.state = .connected
+                    state.ackNr = packet.sequenceNumber &- 1
                 }
                 // Process ACK for congestion control
                 let delay = Int64(packet.timestampDifference)
-                let acked = Int(_congestion.mss) // simplified: 1 segment per ACK
-                _congestion.onAck(sampleDelay: delay, bytesAcked: acked)
+                let acked = Int(state.congestion.mss) // simplified: 1 segment per ACK
+                state.congestion.onAck(sampleDelay: delay, bytesAcked: acked)
 
             case .data:
-                _ackNr = packet.sequenceNumber
-                _receiveBuffer[packet.sequenceNumber] = packet.payload
+                state.ackNr = packet.sequenceNumber
+                state.receiveBuffer[packet.sequenceNumber] = packet.payload
 
             case .fin:
-                _ackNr = packet.sequenceNumber
-                _state = .closed
+                state.ackNr = packet.sequenceNumber
+                state.state = .closed
 
             case .reset:
-                _state = .closed
+                state.state = .closed
             }
         }
     }
 
     /// Check if the congestion window allows sending.
     public var canSend: Bool {
-        lock.withLock { _congestion.canSend }
+        innerState.withLock { $0.congestion.canSend }
     }
 
     private func currentTimestampMicroseconds() -> UInt32 {

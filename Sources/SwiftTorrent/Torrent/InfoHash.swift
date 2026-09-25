@@ -16,7 +16,7 @@ public struct InfoHash: Hashable, Sendable, CustomStringConvertible {
     public let v2Bytes: Data?
 
     public var description: String {
-        bytes.map { ($0 < 16 ? "0" : "") + String($0, radix: 16) }.joined()
+        bytes.hexEncodedString
     }
 
     public var hex: String {
@@ -25,7 +25,7 @@ public struct InfoHash: Hashable, Sendable, CustomStringConvertible {
 
     /// The v2 hex string (64 chars), or nil if this is a pure v1 hash.
     public var v2Hex: String? {
-        v2Bytes?.map { ($0 < 16 ? "0" : "") + String($0, radix: 16) }.joined()
+        v2Bytes?.hexEncodedString
     }
 
     /// Create an info hash from raw bytes.
@@ -64,12 +64,7 @@ public struct InfoHash: Hashable, Sendable, CustomStringConvertible {
     /// Create from hex string.
     public init?(hex: String) {
         guard hex.count == 40 || hex.count == 64 else { return nil }
-        var data = Data()
-        var chars = hex.makeIterator()
-        while let c1 = chars.next(), let c2 = chars.next() {
-            guard let byte = UInt8(String([c1, c2]), radix: 16) else { return nil }
-            data.append(byte)
-        }
+        guard let data = Data(hexString: hex) else { return nil }
         self.init(bytes: data)
     }
 
@@ -85,16 +80,7 @@ public struct InfoHash: Hashable, Sendable, CustomStringConvertible {
 
     /// URL-encoded form for tracker announces (strictly RFC 3986 unreserved ASCII characters).
     public var urlEncoded: String {
-        bytes.map { byte in
-            switch byte {
-            case 0x30...0x39, 0x41...0x5A, 0x61...0x7A, 0x2D, 0x2E, 0x5F, 0x7E:
-                return String(UnicodeScalar(byte))
-            default:
-                let hi = byte >> 4
-                let lo = byte & 0x0F
-                return "%" + String(hi, radix: 16).uppercased() + String(lo, radix: 16).uppercased()
-            }
-        }.joined()
+        bytes.rfc3986PercentEncoded
     }
 
     // MARK: - Hashable

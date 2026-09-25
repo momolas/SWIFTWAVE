@@ -61,10 +61,7 @@ public actor Session {
             throw AddTorrentError.noInfoHash
         }
         if let existing = torrents[hash] {
-            if !params.paused {
-                try? await existing.resume()
-                try? await existing.start()
-            }
+            await resumeIfNeeded(existing, paused: params.paused)
             return existing
         }
 
@@ -74,10 +71,7 @@ public actor Session {
 
         // Re-check after async suspension in startDHT()
         if let existing = torrents[hash] {
-            if !params.paused {
-                try? await existing.resume()
-                try? await existing.start()
-            }
+            await resumeIfNeeded(existing, paused: params.paused)
             return existing
         }
 
@@ -221,4 +215,12 @@ public actor Session {
         await pauseAll()
         alertBroadcaster.finish()
     }
+
+    private func resumeIfNeeded(_ handle: TorrentHandle, paused: Bool) async {
+        if !paused {
+            try? await handle.resume()
+            try? await handle.start()
+        }
+    }
 }
+

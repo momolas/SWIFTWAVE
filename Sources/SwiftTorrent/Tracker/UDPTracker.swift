@@ -6,7 +6,7 @@ public final class UDPTracker: Sendable {
     public let host: String
     public let port: Int
 
-    public init(host: String, port: Int, group: Any? = nil) {
+    public init(host: String, port: Int) {
         self.host = host
         self.port = port
     }
@@ -241,54 +241,4 @@ public final class UDPTracker: Sendable {
     }
 }
 
-// MARK: - Big-endian helpers
-
-extension UInt64 {
-    var bigEndianBytes: [UInt8] {
-        let be = self.bigEndian
-        return withUnsafeBytes(of: be) { Array($0) }
-    }
-}
-
-extension Int64 {
-    var bigEndianBytes: [UInt8] {
-        let be = self.bigEndian
-        return withUnsafeBytes(of: be) { Array($0) }
-    }
-}
-
-extension Int32 {
-    var bigEndianBytes: [UInt8] {
-        let be = self.bigEndian
-        return withUnsafeBytes(of: be) { Array($0) }
-    }
-}
-
-extension Data {
-    func readUInt64BE(at offset: Int) -> UInt64 {
-        let start = self.startIndex + offset
-        var value: UInt64 = 0
-        _ = Swift.withUnsafeMutableBytes(of: &value) { buf in
-            self.copyBytes(to: buf, from: start..<start+8)
-        }
-        return UInt64(bigEndian: value)
-    }
-}
-
-private final class AtomicFlag: @unchecked Sendable {
-    private var value: Bool
-    private let lock = NSLock()
-
-    init(_ value: Bool) {
-        self.value = value
-    }
-
-    func testAndSet() -> Bool {
-        lock.withLock {
-            if value { return false }
-            value = true
-            return true
-        }
-    }
-}
 

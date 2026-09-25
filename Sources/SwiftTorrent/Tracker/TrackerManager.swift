@@ -12,7 +12,7 @@ public actor TrackerManager {
         }
     }
 
-    public init(tiers: [[String]], group: Any? = nil, isBlocked: (@Sendable (String) -> Bool)? = nil) {
+    public init(tiers: [[String]], isBlocked: (@Sendable (String) -> Bool)? = nil) {
         self.tiers = tiers
         self.isBlocked = isBlocked
         for tier in tiers {
@@ -24,7 +24,7 @@ public actor TrackerManager {
     }
 
     /// Convenience: create from TorrentInfo.
-    public init(info: TorrentInfo, group: Any? = nil, isBlocked: (@Sendable (String) -> Bool)? = nil) {
+    public init(info: TorrentInfo, isBlocked: (@Sendable (String) -> Bool)? = nil) {
         var tiers = info.announceList
         if let url = info.announceURL, !url.isEmpty {
             let alreadyPresent = tiers.contains(where: { $0.contains(url) })
@@ -36,14 +36,7 @@ public actor TrackerManager {
                 }
             }
         }
-        self.tiers = tiers
-        self.isBlocked = isBlocked
-        for tier in tiers {
-            for url in tier {
-                let blocked = isBlocked?(url) ?? false
-                self.trackerEntries[url] = TrackerEntry(urlString: url, status: blocked ? .blocked : .notContacted)
-            }
-        }
+        self.init(tiers: tiers, isBlocked: isBlocked)
     }
 
     public func setIsBlocked(_ block: (@Sendable (String) -> Bool)?) {

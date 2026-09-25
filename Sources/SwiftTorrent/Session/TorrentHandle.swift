@@ -52,7 +52,7 @@ public actor TorrentHandle {
         self.onAlert = handler
     }
 
-    public init(params: AddTorrentParams, settings: SessionSettings, group: Any? = nil, dhtNode: DHTNode? = nil) throws {
+    public init(params: AddTorrentParams, settings: SessionSettings, dhtNode: DHTNode? = nil) throws {
         guard let hash = params.infoHash else {
             throw AddTorrentError.noInfoHash
         }
@@ -611,8 +611,14 @@ public actor TorrentHandle {
     }
 
     /// Returns connected peers for UI inspection.
+    public func peers() async -> [PeerInfo] {
+        await peerManager.peers()
+    }
+
+    /// Returns connected peers for UI inspection.
+    @inlinable
     public func getPeers() async -> [PeerInfo] {
-        await peerManager.getPeers()
+        await peers()
     }
 
     /// Returns connected, unchoked, and in-flight request statistics.

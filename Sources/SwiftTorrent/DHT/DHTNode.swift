@@ -26,7 +26,7 @@ public actor DHTNode {
     private let queue = DispatchQueue(label: "org.swifttorrent.dhtnode", qos: .utility)
     private var pendingQueries: [Data: CheckedContinuation<DHTMessage, Error>] = [:]
 
-    public init(nodeID: NodeID = .random(), port: Int = 6881, group: Any? = nil) {
+    public init(nodeID: NodeID = .random(), port: Int = 6881) {
         self.nodeID = nodeID
         self.routingTable = DHTRoutingTable(ownID: nodeID)
         self.storage = DHTStorage()
