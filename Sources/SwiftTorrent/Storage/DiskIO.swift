@@ -1,7 +1,17 @@
 import Foundation
 
-public enum DiskIOError: Error {
+public enum DiskIOError: Error, Sendable, Equatable, LocalizedError {
     case pathTraversalDetected(String)
+    case corruptedPieceData(expectedLength: Int, actualLength: Int)
+
+    public var errorDescription: String? {
+        switch self {
+        case .pathTraversalDetected(let path):
+            return "Potential directory traversal attack detected for path: \(path)"
+        case .corruptedPieceData(let expected, let actual):
+            return "Piece data buffer corrupted or truncated (expected \(expected) bytes, got \(actual))"
+        }
+    }
 }
 
 /// Async disk I/O using a dedicated background dispatch queue to avoid blocking Swift cooperative threads.
@@ -14,7 +24,7 @@ public actor DiskIO {
     public init(basePath: String, fileStorage: FileStorage, threadPoolSize: Int = 4, usePartExtension: Bool = true) {
         self.basePath = basePath
         self.fileStorage = fileStorage
-        self.ioQueue = DispatchQueue(label: "org.swifttorrent.diskio", qos: .utility, attributes: .concurrent)
+        self.ioQueue = DispatchQueue(label: "org.swifttorrent.diskio.serial", qos: .utility)
         self.usePartExtension = usePartExtension
     }
 
@@ -37,13 +47,16 @@ public actor DiskIO {
     }
 
     private func resolvedPath(for slicePath: String) throws -> String {
-        let baseStandardized = URL(fileURLWithPath: basePath).standardizedFileURL.path
-        let combined = (basePath as NSString).appendingPathComponent(slicePath)
-        let resolvedStandardized = URL(fileURLWithPath: combined).standardizedFileURL.path
-        guard resolvedStandardized.hasPrefix(baseStandardized) else {
+        let baseURL = URL(filePath: basePath).resolvingSymlinksInPath().standardizedFileURL
+        let combinedURL = baseURL.appending(path: slicePath).standardizedFileURL
+        let basePathString = baseURL.path
+        let resolvedPathString = combinedURL.path
+
+        let prefixWithSlash = basePathString.hasSuffix("/") ? basePathString : basePathString + "/"
+        guard resolvedPathString == basePathString || resolvedPathString.hasPrefix(prefixWithSlash) else {
             throw DiskIOError.pathTraversalDetected(slicePath)
         }
-        return resolvedStandardized
+        return resolvedPathString
     }
 
     /// Target path on disk for writing: uses .part if enabled and final file is not complete.
@@ -83,6 +96,10 @@ public actor DiskIO {
         try await runIO {
             var dataOffset = 0
             for slice in resolvedSlices {
+                let endOffset = dataOffset + slice.length
+                guard data.count >= endOffset else {
+                    throw DiskIOError.corruptedPieceData(expectedLength: endOffset, actualLength: data.count)
+                }
                 let finalPath = slice.path
                 let filePath = Self.effectiveWritePath(for: finalPath, usePartExtension: usePart)
                 let dir = (filePath as NSString).deletingLastPathComponent
@@ -95,9 +112,9 @@ public actor DiskIO {
                 let handle = try FileHandle(forWritingTo: URL(fileURLWithPath: filePath))
                 defer { try? handle.close() }
                 try handle.seek(toOffset: UInt64(slice.offset))
-                let chunk = data.subdata(in: dataOffset..<dataOffset + slice.length)
+                let chunk = data.subdata(in: dataOffset..<endOffset)
                 try handle.write(contentsOf: chunk)
-                dataOffset += slice.length
+                dataOffset = endOffset
             }
         }
     }
@@ -134,6 +151,7 @@ public actor DiskIO {
 
     /// Read a specific block (slice) of a piece from disk.
     public func readBlock(pieceIndex: Int, offset: Int, length: Int) async throws -> Data {
+        guard offset >= 0, length > 0 else { return Data() }
         let pieceData = try await readPiece(index: pieceIndex)
         guard offset < pieceData.count else { return Data() }
         let end = min(offset + length, pieceData.count)
@@ -164,6 +182,11 @@ public actor DiskIO {
                 let targetPath = usePart ? (finalPath + ".part") : finalPath
                 if !FileManager.default.fileExists(atPath: targetPath) {
                     FileManager.default.createFile(atPath: targetPath, contents: nil)
+                    if file.length > 0 {
+                        let handle = try FileHandle(forWritingTo: URL(fileURLWithPath: targetPath))
+                        defer { try? handle.close() }
+                        try handle.truncate(atOffset: UInt64(file.length))
+                    }
                 }
             }
         }
@@ -183,10 +206,13 @@ public actor DiskIO {
             for finalPath in resolvedFiles {
                 let partPath = finalPath + ".part"
                 if FileManager.default.fileExists(atPath: partPath) {
+                    let partURL = URL(fileURLWithPath: partPath)
+                    let finalURL = URL(fileURLWithPath: finalPath)
                     if FileManager.default.fileExists(atPath: finalPath) {
-                        try? FileManager.default.removeItem(atPath: finalPath)
+                        _ = try FileManager.default.replaceItemAt(finalURL, withItemAt: partURL, backupItemName: nil, options: .usingNewMetadataOnly)
+                    } else {
+                        try FileManager.default.moveItem(at: partURL, to: finalURL)
                     }
-                    try FileManager.default.moveItem(atPath: partPath, toPath: finalPath)
                 }
             }
         }

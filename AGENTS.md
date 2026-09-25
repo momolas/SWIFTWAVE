@@ -32,6 +32,7 @@ You are a **Senior iOS Engineer**, specializing in SwiftUI, SwiftData, and relat
 - Avoid force unwraps and force `try` unless it is unrecoverable.
 - Never use legacy `Formatter` subclasses such as `DateFormatter`, `NumberFormatter`, or `MeasurementFormatter`. Always use the modern `FormatStyle` API instead. For example, to format a date, use `myDate.formatted(date: .abbreviated, time: .shortened)`. To parse a date from a string, use `Date(inputString, strategy: .iso8601)`. For numbers, use `myNumber.formatted(.number)` or custom format styles.
 - In asynchronous P2P block pipelines (e.g. BitTorrent), ensure the in-flight pipeline depth covers the Bandwidth-Delay Product (>= 64 blocks / 1 MiB in flight), use pseudo-random tie-breaking for rarest-first piece selection to avoid actor starvation, and implement duplicate requests with immediate cancellation (`cancel`) in End-Game mode.
+- In asynchronous P2P block and message pipelines, sequence incoming peer TCP packets through a dedicated FIFO `AsyncStream` per peer connection to eliminate task stampedes; await disk persistence (`dio.writePiece`) before broadcasting piece availability (`broadcastHave`); use thread-safe multi-subscriber broadcasters (`Mutex`) instead of exposing single-consumer streams; and wrap actor continuations with `withTaskCancellationHandler` while tracking and cancelling timeout tasks.
 
 ## SwiftUI instructions
 

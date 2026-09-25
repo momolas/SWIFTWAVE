@@ -1,5 +1,5 @@
 import XCTest
-@testable import SwiftTorrent
+@testable import TorrentKit
 
 final class DHTNodeIDTests: XCTestCase {
     func testRandom() {

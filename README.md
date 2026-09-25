@@ -1,38 +1,43 @@
-# SwiftTorrent
+# TorrentKit (SWIFTWAVE)
 
 ![screenshot](https://raw.githubusercontent.com/warppipe/SwiftTorrent/refs/heads/main/img/SwiftTorrent.png)
 
 [![CI](https://github.com/warppipe/SwiftTorrent/actions/workflows/ci.yml/badge.svg)](https://github.com/warppipe/SwiftTorrent/actions/workflows/ci.yml)
 
-A pure Swift BitTorrent library targeting macOS 14+ and iOS 17+. Implements BEP-3 (peer wire protocol), BEP-5 (DHT), BEP-9 (metadata exchange), BEP-10 (extension protocol), and BEP-15 (UDP trackers) with no C/C++ dependencies.
+A pure Swift BitTorrent library targeting macOS 15+, iOS 18+, and tvOS 18+. Implements BEP-3 (peer wire protocol), BEP-5 (DHT), BEP-6 (Fast Extension), BEP-7 (IPv6), BEP-9 (metadata exchange), BEP-10 (extension protocol), BEP-11 (PEX), BEP-15 (UDP trackers), BEP-27 (Private torrents), BEP-29 (uTP / LEDBAT), BEP-52 (BitTorrent v2), and MSE/PE stream encryption with zero external C/C++ or third-party dependencies.
 
 ## Features
 
 - Full download pipeline: magnet link → metadata exchange → piece download → multi-file disk write
 - BEP-9 metadata exchange (download torrent info from peers via magnet links)
 - BEP-10 extension protocol for extended handshake and message negotiation
-- Multi-file torrent support with cross-file piece spanning
+- BEP-11 peer exchange (ut_pex) with seed flag tracking
+- BEP-6 Fast Extension (haveAll, haveNone, allowedFast, suggestPiece, rejectRequest)
+- BEP-27 private torrents compliance (strict DHT/PEX isolation)
+- BEP-29 Micro Transport Protocol (uTP) with LEDBAT congestion control
+- BEP-52 BitTorrent v2 support with SHA-256 and per-file Merkle trees
+- Message Stream Encryption (MSE / PE) with Diffie-Hellman 768-bit and ARC4 (drop1024)
+- Multi-file torrent support with cross-file piece spanning and `.part` file protection
 - Bencode encoding/decoding
 - .torrent file parsing and creation
 - Magnet link support
 - Peer wire protocol (choke, unchoke, interested, have, bitfield, request, piece, cancel)
 - HTTP and UDP tracker clients
 - Kademlia DHT with k-bucket routing table
-- Rarest-first piece selection
+- Rarest-first piece selection with pseudo-random tie-breaking and End-Game mode
+- Sequential streaming engine prioritizing container headers, seek tables, and playback buffer
 - Async disk I/O with piece caching
 - Resume data for saving/restoring state
-- Event notifications via `AsyncStream<Alert>`
+- Event notifications via `AsyncStream<Alert>` and `statusStream()`
 
 ## Requirements
 
-- Swift 5.9+
-- macOS 14+ / iOS 17+
+- Swift 6.0+
+- macOS 15+ / iOS 18+ / tvOS 18+
 
 ## Dependencies
 
-- [swift-nio](https://github.com/apple/swift-nio) — async TCP/UDP networking
-- [swift-nio-extras](https://github.com/apple/swift-nio-extras) — byte buffer utilities
-- [swift-crypto](https://github.com/apple/swift-crypto) — SHA-1, SHA-256
+- **Zero third-party dependencies**: Built purely on Apple native frameworks (`Network.framework`, `CryptoKit`, `Synchronization`, and Darwin POSIX sockets).
 
 ## Build
 
@@ -46,7 +51,7 @@ swift test
 ### Add a torrent from a .torrent file
 
 ```swift
-import SwiftTorrent
+import TorrentKit
 
 let session = Session(settings: SessionSettings(
     listenPort: 6881,
@@ -135,7 +140,7 @@ let encoded = encoder.encode(.dictionary([
 ### Download a multi-file torrent from a magnet link
 
 ```swift
-import SwiftTorrent
+import TorrentKit
 
 let session = Session(settings: SessionSettings(
     listenPort: 6881,
@@ -182,7 +187,7 @@ let params = AddTorrentParams(resumeData: resumeData)
 ```
 Session (actor)
 ├── TorrentHandle (actor, per-torrent)
-│   ├── PeerManager (actor) → PeerConnection (SwiftNIO)
+│   ├── PeerManager (actor) → PeerConnection (Network.framework)
 │   ├── PieceManager (actor) → Bitfield, PiecePicker
 │   ├── TrackerManager (actor) → HTTPTracker, UDPTracker
 │   └── DiskIO (actor) → FileStorage, PieceCache

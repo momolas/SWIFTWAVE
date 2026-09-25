@@ -1,6 +1,6 @@
 import Foundation
 
-public enum BencodeError: Error, Equatable, LocalizedError {
+public enum BencodeError: Error, Sendable, Equatable, LocalizedError {
     case unexpectedEnd
     case invalidFormat(String)
     case invalidInteger

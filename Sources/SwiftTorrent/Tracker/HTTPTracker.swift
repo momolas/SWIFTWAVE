@@ -294,7 +294,7 @@ public struct AnnounceResponse: Sendable {
     public let peers: [(String, UInt16)]
 }
 
-public enum TrackerError: Error, Equatable, LocalizedError {
+public enum TrackerError: Error, Sendable, Equatable, LocalizedError {
     case invalidURL
     case failure(String)
     case invalidResponse

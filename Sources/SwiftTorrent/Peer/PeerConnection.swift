@@ -1,25 +1,49 @@
 import Foundation
 import Network
+import Synchronization
 
 /// Manages a single peer TCP connection using native Network.framework.
-public final class PeerConnection: @unchecked Sendable {
+public final class PeerConnection: Sendable {
     public let address: String
     public let port: UInt16
 
-    private var connection: NWConnection?
-    private var receiveTask: Task<Void, Never>?
-    private let lock = NSLock()
+    private struct ProtectedState {
+        var connection: NWConnection?
+        var receiveTask: Task<Void, Never>?
+        var onMessage: (@Sendable (PeerMessage) -> Void)?
+        var onDisconnect: (@Sendable () -> Void)?
+        var remotePeerID: Data?
+        var supportsExtensions: Bool = false
+        var supportsFastExtension: Bool = false
+        var supportsDHT: Bool = false
+    }
+
+    private let state = Mutex(ProtectedState())
     private let queue = DispatchQueue(label: "org.swifttorrent.peerconnection", qos: .userInitiated)
 
     private let infoHash: Data
     private let peerID: Data
 
-    public var onMessage: (@Sendable (PeerMessage) -> Void)?
-    public var onDisconnect: (@Sendable () -> Void)?
-    public private(set) var remotePeerID: Data?
-    public private(set) var supportsExtensions: Bool = false
-    public private(set) var supportsFastExtension: Bool = false
-    public private(set) var supportsDHT: Bool = false
+    public var onMessage: (@Sendable (PeerMessage) -> Void)? {
+        get { state.withLock { $0.onMessage } }
+        set { state.withLock { $0.onMessage = newValue } }
+    }
+    public var onDisconnect: (@Sendable () -> Void)? {
+        get { state.withLock { $0.onDisconnect } }
+        set { state.withLock { $0.onDisconnect = newValue } }
+    }
+    public var remotePeerID: Data? {
+        state.withLock { $0.remotePeerID }
+    }
+    public var supportsExtensions: Bool {
+        state.withLock { $0.supportsExtensions }
+    }
+    public var supportsFastExtension: Bool {
+        state.withLock { $0.supportsFastExtension }
+    }
+    public var supportsDHT: Bool {
+        state.withLock { $0.supportsDHT }
+    }
 
     public let isPrivate: Bool
     public let enableFastExtension: Bool
@@ -55,8 +79,8 @@ public final class PeerConnection: @unchecked Sendable {
         let tcpParams = NWParameters(tls: nil, tcp: tcpOptions)
         let conn = NWConnection(to: endpoint, using: tcpParams)
 
-        lock.withLock {
-            self.connection = conn
+        state.withLock {
+            $0.connection = conn
         }
 
         // Wait for connection to be ready with 4-second timeout
@@ -150,23 +174,22 @@ public final class PeerConnection: @unchecked Sendable {
             }
         }
 
-        self.remotePeerID = handshakeResp.peerID
-        self.supportsExtensions = handshakeResp.supportsExtensions
-        self.supportsFastExtension = self.enableFastExtension && handshakeResp.supportsFastExtension
-        self.supportsDHT = self.enableDHT && !self.isPrivate && handshakeResp.supportsDHT
-
-        // Start message receive loop
         let task = Task { [weak self] in
             guard let self else { return }
             await self.messageReceiveLoop(connection: conn, initialBuffer: initialBuffer)
         }
-        lock.withLock {
-            self.receiveTask = task
+
+        state.withLock { st in
+            st.remotePeerID = handshakeResp.peerID
+            st.supportsExtensions = handshakeResp.supportsExtensions
+            st.supportsFastExtension = self.enableFastExtension && handshakeResp.supportsFastExtension
+            st.supportsDHT = self.enableDHT && !self.isPrivate && handshakeResp.supportsDHT
+            st.receiveTask = task
         }
     }
 
     public func send(_ message: PeerMessage) async throws {
-        guard let conn = lock.withLock({ connection }) else {
+        guard let conn = state.withLock({ $0.connection }) else {
             throw PeerConnectionError.notConnected
         }
         let data = message.encode()
@@ -174,11 +197,11 @@ public final class PeerConnection: @unchecked Sendable {
     }
 
     public func close() async throws {
-        let (conn, task) = lock.withLock { () -> (NWConnection?, Task<Void, Never>?) in
-            let c = connection
-            let t = receiveTask
-            connection = nil
-            receiveTask = nil
+        let (conn, task) = state.withLock { st -> (NWConnection?, Task<Void, Never>?) in
+            let c = st.connection
+            let t = st.receiveTask
+            st.connection = nil
+            st.receiveTask = nil
             return (c, t)
         }
         task?.cancel()
@@ -230,7 +253,8 @@ public final class PeerConnection: @unchecked Sendable {
                 let length = lengthData.readUInt32BE(at: 0)
 
                 if length == 0 {
-                    onMessage?(.keepAlive)
+                    let callback = state.withLock { $0.onMessage }
+                    callback?(.keepAlive)
                     continue
                 }
 
@@ -241,34 +265,48 @@ public final class PeerConnection: @unchecked Sendable {
 
                 let payload = try await receiveExact(connection: connection, count: Int(length), buffer: &buffer)
                 let message = try PeerMessage.decode(from: payload)
-                onMessage?(message)
+                let callback = state.withLock { $0.onMessage }
+                callback?(message)
             } catch {
                 break
             }
         }
 
         connection.cancel()
-        onDisconnect?()
+        let disconnectCallback = state.withLock { $0.onDisconnect }
+        disconnectCallback?()
     }
 }
 
-public enum PeerConnectionError: Error {
+public enum PeerConnectionError: Error, Sendable, Equatable, LocalizedError {
     case notConnected
     case connectionTimeout
     case handshakeFailed
     case handshakeTimeout
+
+    public var errorDescription: String? {
+        switch self {
+        case .notConnected:
+            return "Peer connection is not connected."
+        case .connectionTimeout:
+            return "Connection to peer timed out."
+        case .handshakeFailed:
+            return "BitTorrent handshake with peer failed."
+        case .handshakeTimeout:
+            return "Handshake exchange with peer timed out."
+        }
+    }
 }
 
-private final class AtomicFlag: @unchecked Sendable {
-    private var value: Bool
-    private let lock = NSLock()
+private final class AtomicFlag: Sendable {
+    private let state: Mutex<Bool>
 
-    init(_ value: Bool) {
-        self.value = value
+    init(_ value: Bool = false) {
+        self.state = Mutex(value)
     }
 
     func testAndSet() -> Bool {
-        lock.withLock {
+        state.withLock { value in
             if value { return false }
             value = true
             return true

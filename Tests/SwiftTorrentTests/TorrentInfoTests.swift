@@ -1,5 +1,5 @@
 import XCTest
-@testable import SwiftTorrent
+@testable import TorrentKit
 
 final class TorrentInfoTests: XCTestCase {
     /// Create a minimal valid single-file .torrent bencoded data.

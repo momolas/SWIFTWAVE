@@ -143,6 +143,9 @@ public struct TorrentInfo: Sendable, Identifiable, Equatable, Hashable {
         // v1 pieces (may be absent in pure v2 torrents)
         let pieces: Data
         if let piecesValue = infoValue["pieces"], let piecesData = piecesValue.stringValue {
+            guard piecesData.count % 20 == 0 else {
+                throw TorrentInfoError.invalidFormat("Pieces hash length must be a multiple of 20")
+            }
             pieces = piecesData
         } else {
             pieces = Data()
@@ -362,6 +365,14 @@ public struct TorrentInfo: Sendable, Identifiable, Equatable, Hashable {
 }
 
 
-public enum TorrentInfoError: Error, Equatable {
+public enum TorrentInfoError: Error, Sendable, Equatable, LocalizedError {
     case invalidFormat(String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .invalidFormat(let message):
+            return "Invalid torrent file format: \(message)"
+        }
+    }
 }
+

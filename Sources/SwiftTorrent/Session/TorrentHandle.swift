@@ -1,8 +1,15 @@
 import Foundation
 
 /// Errors thrown by TorrentHandle wait methods.
-public enum TorrentError: Error {
+public enum TorrentError: Error, Sendable, Equatable, LocalizedError {
     case timeout
+
+    public var errorDescription: String? {
+        switch self {
+        case .timeout:
+            return "Torrent operation timed out."
+        }
+    }
 }
 
 /// Per-torrent controller tying peers, pieces, and disk together.
@@ -28,16 +35,26 @@ public actor TorrentHandle {
     private var downloadMonitorTask: Task<Void, Never>?
     private var metadataExchange: MetadataExchange?
     private var metadataContinuations: [UInt64: CheckedContinuation<TorrentInfo, Error>] = [:]
+    private var metadataTimeoutTasks: [UInt64: Task<Void, Never>] = [:]
     private var completionContinuations: [UInt64: CheckedContinuation<Void, Error>] = [:]
+    private var completionTimeoutTasks: [UInt64: Task<Void, Never>] = [:]
     private var nextWaitID: UInt64 = 0
     private let settings: SessionSettings
     private var resumeData: ResumeData?
     public let isStreaming: Bool
     private let dhtNode: DHTNode?
     private var dhtAnnounceTask: Task<Void, Never>?
+    public var onAlert: (@Sendable (any Alert) -> Void)?
 
-    public init(params: AddTorrentParams, settings: SessionSettings, group: Any? = nil, dhtNode: DHTNode? = nil) {
-        let hash = params.infoHash!
+    /// Sets the alert dispatch callback for torrent events.
+    public func setOnAlert(_ handler: (@Sendable (any Alert) -> Void)?) {
+        self.onAlert = handler
+    }
+
+    public init(params: AddTorrentParams, settings: SessionSettings, group: Any? = nil, dhtNode: DHTNode? = nil) throws {
+        guard let hash = params.infoHash else {
+            throw AddTorrentError.noInfoHash
+        }
         self.infoHash = hash
         self.info = params.torrentInfo
         self.magnetLink = params.magnetLink
@@ -170,6 +187,7 @@ public actor TorrentHandle {
     }
 
     private func handlePieceCompleted(_ pieceIndex: Int) async {
+        onAlert?(PieceFinishedAlert(pieceIndex: pieceIndex))
         if let pm = pieceManager, await pm.isComplete() {
             await transitionToSeeding()
         }
@@ -275,6 +293,8 @@ public actor TorrentHandle {
         // Resume all waiting metadata continuations
         let conts = metadataContinuations
         metadataContinuations.removeAll()
+        for task in metadataTimeoutTasks.values { task.cancel() }
+        metadataTimeoutTasks.removeAll()
         for (_, cont) in conts {
             cont.resume(returning: info)
         }
@@ -357,11 +377,15 @@ public actor TorrentHandle {
 
     private func transitionToSeeding() async {
         guard state != .seeding else { return }
+        let previousState = state
         state = .seeding
         downloadRate = 0
         downloadMonitorTask?.cancel()
 
         try? await diskIO?.finalizeFiles()
+
+        onAlert?(StateChangedAlert(infoHash: infoHash, previousState: previousState, newState: .seeding))
+        onAlert?(TorrentFinishedAlert(infoHash: infoHash))
 
         // Announce completed event to trackers
         if let trackerMgr = trackerManager {
@@ -383,6 +407,8 @@ public actor TorrentHandle {
         // Resume all waiting completion continuations
         let conts = completionContinuations
         completionContinuations.removeAll()
+        for task in completionTimeoutTasks.values { task.cancel() }
+        completionTimeoutTasks.removeAll()
         for (_, cont) in conts {
             cont.resume()
         }
@@ -442,6 +468,19 @@ public actor TorrentHandle {
         reannounceTask = nil
         downloadMonitorTask = nil
         dhtAnnounceTask = nil
+
+        let metaConts = metadataContinuations.values
+        metadataContinuations.removeAll()
+        for task in metadataTimeoutTasks.values { task.cancel() }
+        metadataTimeoutTasks.removeAll()
+        for cont in metaConts { cont.resume(throwing: CancellationError()) }
+
+        let compConts = completionContinuations.values
+        completionContinuations.removeAll()
+        for task in completionTimeoutTasks.values { task.cancel() }
+        completionTimeoutTasks.removeAll()
+        for cont in compConts { cont.resume(throwing: CancellationError()) }
+
         await peerManager.disconnectAll()
     }
 
@@ -452,13 +491,15 @@ public actor TorrentHandle {
     }
 
     /// Real-time stream of status updates for SwiftUI.
-    public func statusStream(interval: TimeInterval = 1.0) -> AsyncStream<TorrentStatus> {
-        AsyncStream { continuation in
-            let task = Task {
+    public nonisolated func statusStream(interval: TimeInterval = 1.0) -> AsyncStream<TorrentStatus> {
+        let clampedInterval = max(0.1, interval)
+        return AsyncStream(bufferingPolicy: .bufferingNewest(1)) { continuation in
+            let task = Task { [weak self] in
                 while !Task.isCancelled {
+                    guard let self else { break }
                     let st = await self.status()
                     continuation.yield(st)
-                    try? await Task.sleep(for: .seconds(interval))
+                    try? await Task.sleep(for: .seconds(clampedInterval))
                 }
                 continuation.finish()
             }
@@ -477,10 +518,6 @@ public actor TorrentHandle {
     public func status() async -> TorrentStatus {
         let progress = await pieceManager?.progress() ?? 0
         let completed = await pieceManager?.getCompleted()
-        let isAllSet = completed?.allSet ?? false
-        if state == .downloading, (progress >= 1.0 || isAllSet) {
-            await transitionToSeeding()
-        }
         let name: String
         if let info = info {
             name = info.name
@@ -506,6 +543,26 @@ public actor TorrentHandle {
             isStreaming: isStreaming,
             isPrivate: info?.isPrivate ?? false
         )
+    }
+
+    /// Returns the resolved on-disk file URL (accounting for .part extension during download) for media playback.
+    public func fileURL(for fileEntry: TorrentInfo.FileEntry) -> URL {
+        let baseURL = URL(filePath: savePath).appending(path: fileEntry.path)
+        let partURL = baseURL.appendingPathExtension("part")
+        if settings.usePartExtension && FileManager.default.fileExists(atPath: partURL.path) {
+            return partURL
+        }
+        return baseURL
+    }
+
+    /// Update the streaming playback cursor to prioritize swarm piece downloads around the scrubbed position.
+    public func seekPlayback(toPiece pieceIndex: Int) async {
+        await peerManager.setPlaybackPiece(pieceIndex)
+    }
+
+    /// Dynamically enable or disable sequential streaming piece prioritization.
+    public func setStreaming(enabled: Bool, initialPiece: Int = 0) async {
+        await peerManager.setSequentialStreaming(enabled: enabled, currentPlaybackPiece: initialPiece)
     }
 
     private func startDHTLookupAndAnnounce(dhtNode: DHTNode) {
@@ -648,21 +705,32 @@ public actor TorrentHandle {
         let id = nextWaitID
         nextWaitID += 1
 
-        return try await withCheckedThrowingContinuation { continuation in
-            metadataContinuations[id] = continuation
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                metadataContinuations[id] = continuation
 
+                let timeoutTask = Task { [weak self] in
+                    try? await Task.sleep(for: .seconds(seconds))
+                    guard let self else { return }
+                    if let cont = await self.removeMetadataContinuation(id: id) {
+                        cont.resume(throwing: TorrentError.timeout)
+                    }
+                }
+                metadataTimeoutTasks[id] = timeoutTask
+            }
+        } onCancel: {
             Task { [weak self] in
-                try? await Task.sleep(for: .seconds(seconds))
                 guard let self else { return }
                 if let cont = await self.removeMetadataContinuation(id: id) {
-                    cont.resume(throwing: TorrentError.timeout)
+                    cont.resume(throwing: CancellationError())
                 }
             }
         }
     }
 
     private func removeMetadataContinuation(id: UInt64) -> CheckedContinuation<TorrentInfo, Error>? {
-        metadataContinuations.removeValue(forKey: id)
+        metadataTimeoutTasks.removeValue(forKey: id)?.cancel()
+        return metadataContinuations.removeValue(forKey: id)
     }
 
     /// Checks whether the initial stream pieces (container header and initial buffer) are ready for playback.
@@ -688,20 +756,31 @@ public actor TorrentHandle {
         let id = nextWaitID
         nextWaitID += 1
 
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            completionContinuations[id] = continuation
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                completionContinuations[id] = continuation
 
+                let timeoutTask = Task { [weak self] in
+                    try? await Task.sleep(for: .seconds(seconds))
+                    guard let self else { return }
+                    if let cont = await self.removeCompletionContinuation(id: id) {
+                        cont.resume(throwing: TorrentError.timeout)
+                    }
+                }
+                completionTimeoutTasks[id] = timeoutTask
+            }
+        } onCancel: {
             Task { [weak self] in
-                try? await Task.sleep(for: .seconds(seconds))
                 guard let self else { return }
                 if let cont = await self.removeCompletionContinuation(id: id) {
-                    cont.resume(throwing: TorrentError.timeout)
+                    cont.resume(throwing: CancellationError())
                 }
             }
         }
     }
 
     private func removeCompletionContinuation(id: UInt64) -> CheckedContinuation<Void, Error>? {
-        completionContinuations.removeValue(forKey: id)
+        completionTimeoutTasks.removeValue(forKey: id)?.cancel()
+        return completionContinuations.removeValue(forKey: id)
     }
 }

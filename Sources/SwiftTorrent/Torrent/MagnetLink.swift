@@ -46,7 +46,8 @@ public struct MagnetLink: Sendable, Equatable, Hashable {
                     }
                 }
             case "dn":
-                name = value
+                let sanitized = TorrentInfo.sanitizePathComponent(value)
+                name = sanitized.isEmpty ? nil : sanitized
             case "tr":
                 trackers.append(value)
             case "ws":

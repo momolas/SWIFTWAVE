@@ -22,6 +22,8 @@ public actor PeerManager {
     public var onMetadataReceived: ((TorrentInfo) -> Void)?
     public var onDHTPortReceived: ((String, UInt16) -> Void)?
     private var globalPendingRequests: [PeerState.BlockRequest: Set<String>] = [:]
+    private var peerMessageContinuations: [String: AsyncStream<PeerMessage>.Continuation] = [:]
+    private var peerMessageTasks: [String: Task<Void, Never>] = [:]
 
     public let isPrivate: Bool
     public var dhtPort: UInt16?
@@ -126,15 +128,26 @@ public actor PeerManager {
         peerInfos[key] = PeerInfo(id: Data(), address: address, port: port)
         connectingKeys.insert(key)
 
-        // Set up message callbacks
-        conn.onMessage = { [weak self] message in
-            guard let self else { return }
-            Task { await self.handleMessage(message, from: key) }
+        // Set up sequential message pipeline per peer
+        let (stream, continuation) = AsyncStream<PeerMessage>.makeStream(bufferingPolicy: .bufferingNewest(256))
+        peerMessageContinuations[key] = continuation
+
+        conn.onMessage = { message in
+            continuation.yield(message)
         }
-        conn.onDisconnect = { [weak self] in
-            guard let self else { return }
-            Task { await self.handleDisconnect(key: key) }
+        conn.onDisconnect = {
+            continuation.finish()
         }
+
+        let messageTask = Task { [weak self] in
+            for await message in stream {
+                guard let self, !Task.isCancelled else { break }
+                await self.handleMessage(message, from: key)
+            }
+            guard let self, !Task.isCancelled else { return }
+            await self.handleDisconnect(key: key)
+        }
+        peerMessageTasks[key] = messageTask
 
         Task {
             do {
@@ -624,15 +637,20 @@ public actor PeerManager {
         guard let pm = pieceManager else { return }
         let verified = await pm.completePiece(pieceIndex)
         if verified {
-            // Write to disk in background task to prevent blocking PeerManager actor message processing
             if let dio = diskIO {
-                Task {
-                    try? await dio.writePiece(index: pieceIndex, data: data)
+                do {
+                    try await dio.writePiece(index: pieceIndex, data: data)
+                    await broadcastHave(pieceIndex: UInt32(pieceIndex))
+                    onPieceCompleted?(pieceIndex)
+                    await fillAllAvailablePeers()
+                } catch {
+                    print("[PeerManager] Disk write failure on piece \(pieceIndex): \(error)")
                 }
+            } else {
+                await broadcastHave(pieceIndex: UInt32(pieceIndex))
+                onPieceCompleted?(pieceIndex)
+                await fillAllAvailablePeers()
             }
-            await broadcastHave(pieceIndex: UInt32(pieceIndex))
-            onPieceCompleted?(pieceIndex)
-            await fillAllAvailablePeers()
         }
     }
 
@@ -651,6 +669,10 @@ public actor PeerManager {
     }
 
     private func removePeerByKey(_ key: String) {
+        peerMessageContinuations[key]?.finish()
+        peerMessageContinuations.removeValue(forKey: key)
+        peerMessageTasks[key]?.cancel()
+        peerMessageTasks.removeValue(forKey: key)
         connections.removeValue(forKey: key)
         peerInfos.removeValue(forKey: key)
         peerStates.removeValue(forKey: key)
@@ -791,6 +813,14 @@ public actor PeerManager {
     public func disconnectAll() async {
         pexBroadcastTask?.cancel()
         pexBroadcastTask = nil
+        for continuation in peerMessageContinuations.values {
+            continuation.finish()
+        }
+        peerMessageContinuations.removeAll()
+        for task in peerMessageTasks.values {
+            task.cancel()
+        }
+        peerMessageTasks.removeAll()
         for conn in connections.values {
             try? await conn.close()
         }
@@ -800,5 +830,15 @@ public actor PeerManager {
         connectedPeers.removeAll()
         globalPendingRequests.removeAll()
         remotePexIDs.removeAll()
+    }
+
+    /// Update playback piece for sequential streaming prioritization.
+    public func setPlaybackPiece(_ pieceIndex: Int) {
+        piecePicker?.setCurrentPlaybackPiece(pieceIndex)
+    }
+
+    /// Dynamically enable or disable sequential streaming piece prioritization.
+    public func setSequentialStreaming(enabled: Bool, currentPlaybackPiece: Int = 0) {
+        piecePicker?.setSequentialStreaming(enabled: enabled, currentPlaybackPiece: currentPlaybackPiece)
     }
 }

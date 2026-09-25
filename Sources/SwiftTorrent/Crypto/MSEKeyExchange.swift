@@ -7,12 +7,16 @@ public struct MSEKeyExchange: Sendable {
     // MARK: - Constants
 
     /// BitTorrent MSE standard 768-bit prime P.
-    public static let prime: BigUInt = BigUInt(hex:
-        "FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD1" +
-        "29024E088A67CC74020BBEA63B139B22514A08798E3404DD" +
-        "EF9519B3CD3A431B302B0A6DF25F14374FE1356D6D51C245" +
-        "E485B576625E7EC6F44C42E9A63A36210000000000090563"
-    )!
+    public static let prime: BigUInt = {
+        let hex = "FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD1" +
+            "29024E088A67CC74020BBEA63B139B22514A08798E3404DD" +
+            "EF9519B3CD3A431B302B0A6DF25F14374FE1356D6D51C245" +
+            "E485B576625E7EC6F44C42E9A63A36210000000000090563"
+        guard let p = BigUInt(hex: hex) else {
+            preconditionFailure("Failed to initialize standard 768-bit MSE prime constant")
+        }
+        return p
+    }()
 
     /// Generator g = 2.
     public static let generator = BigUInt(2)

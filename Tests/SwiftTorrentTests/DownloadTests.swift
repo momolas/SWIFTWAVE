@@ -1,7 +1,7 @@
 import XCTest
 import Foundation
 import CryptoKit
-@testable import SwiftTorrent
+@testable import TorrentKit
 
 final class PeerStateTests: XCTestCase {
     func testInitialState() async {
@@ -325,7 +325,7 @@ final class TorrentHandleGetFilesTests: XCTestCase {
             "magnet:?xt=urn:btih:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&dn=Test",
             savePath: NSTemporaryDirectory()
         )
-        let handle = TorrentHandle(params: params, settings: settings)
+        let handle = try TorrentHandle(params: params, settings: settings)
         let files = await handle.getFiles()
         XCTAssertNil(files)
     }
@@ -334,7 +334,7 @@ final class TorrentHandleGetFilesTests: XCTestCase {
         let info = makeTorrentInfo(pieceLength: 16384, totalSize: 32768)
         let params = AddTorrentParams(torrentInfo: info, savePath: NSTemporaryDirectory())
         let settings = SessionSettings(listenPort: 0, savePath: NSTemporaryDirectory())
-        let handle = TorrentHandle(params: params, settings: settings)
+        let handle = try TorrentHandle(params: params, settings: settings)
         let files = await handle.getFiles()
         XCTAssertNotNil(files)
         XCTAssertEqual(files?.count, 1)

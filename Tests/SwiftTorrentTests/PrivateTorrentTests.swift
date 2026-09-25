@@ -1,5 +1,5 @@
 import XCTest
-@testable import SwiftTorrent
+@testable import TorrentKit
 
 final class PrivateTorrentTests: XCTestCase {
     func testHandshakeClearsDHTWhenPrivate() {

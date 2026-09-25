@@ -26,6 +26,11 @@ public struct PiecePicker: Sendable {
         }
     }
 
+    /// Update the current playback piece index for streaming priority window.
+    public mutating func setCurrentPlaybackPiece(_ piece: Int) {
+        sequentialEngine?.currentPlaybackPiece = max(0, min(piece, pieceCount - 1))
+    }
+
     /// Update availability from a peer's bitfield.
     public mutating func addPeerBitfield(_ bitfield: Bitfield) {
         for i in 0..<min(pieceCount, bitfield.count) {

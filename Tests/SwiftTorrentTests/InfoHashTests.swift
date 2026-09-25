@@ -1,6 +1,6 @@
 import Testing
 import Foundation
-@testable import SwiftTorrent
+@testable import TorrentKit
 
 @Suite("InfoHash Validation")
 struct InfoHashTests {

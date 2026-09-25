@@ -91,7 +91,9 @@ public actor DHTNode {
             let data = Data(buffer[0..<bytesRead])
             var ipStr = [CChar](repeating: 0, count: Int(INET_ADDRSTRLEN))
             inet_ntop(AF_INET, &senderAddr.sin_addr, &ipStr, socklen_t(INET_ADDRSTRLEN))
-            let address = String(cString: ipStr)
+            let address = ipStr.withUnsafeBufferPointer { ptr in
+                ptr.baseAddress.map { String(cString: $0) } ?? ""
+            }
             let port = UInt16(bigEndian: senderAddr.sin_port)
 
             if let message = try? DHTMessage.decode(from: data) {

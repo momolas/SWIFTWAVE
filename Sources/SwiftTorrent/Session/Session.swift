@@ -1,19 +1,58 @@
 import Foundation
+import Synchronization
+
+final class AlertBroadcaster: Sendable {
+    private let subscribers = Mutex<[UUID: AsyncStream<any Alert>.Continuation]>([:])
+
+    func post(_ alert: any Alert) {
+        let subs = subscribers.withLock { Array($0.values) }
+        for sub in subs {
+            sub.yield(alert)
+        }
+    }
+
+    func stream() -> AsyncStream<any Alert> {
+        let id = UUID()
+        return AsyncStream(bufferingPolicy: .unbounded) { continuation in
+            subscribers.withLock {
+                $0[id] = continuation
+            }
+            continuation.onTermination = { [weak self] _ in
+                _ = self?.subscribers.withLock {
+                    $0.removeValue(forKey: id)
+                }
+            }
+        }
+    }
+
+    func finish() {
+        let subs = subscribers.withLock {
+            let copy = Array($0.values)
+            $0.removeAll()
+            return copy
+        }
+        for sub in subs {
+            sub.finish()
+        }
+    }
+}
 
 /// Top-level controller for managing torrents.
 public actor Session {
     private var settings: SessionSettings
     private var torrents: [InfoHash: TorrentHandle] = [:]
     private var dhtNode: DHTNode?
-    private let alertContinuation: AsyncStream<any Alert>.Continuation
+    private let alertBroadcaster = AlertBroadcaster()
     public let alerts: AsyncStream<any Alert>
 
     public init(settings: SessionSettings = SessionSettings()) {
         self.settings = settings
+        self.alerts = alertBroadcaster.stream()
+    }
 
-        let (stream, continuation) = AsyncStream<any Alert>.makeStream()
-        self.alerts = stream
-        self.alertContinuation = continuation
+    /// Real-time multi-subscriber stream of session and torrent alerts.
+    public nonisolated func alertStream() -> AsyncStream<any Alert> {
+        alertBroadcaster.stream()
     }
 
     /// Add a torrent to the session.
@@ -33,11 +72,24 @@ public actor Session {
             try? await startDHT()
         }
 
-        let handle = TorrentHandle(params: params, settings: settings, dhtNode: dhtNode)
+        // Re-check after async suspension in startDHT()
+        if let existing = torrents[hash] {
+            if !params.paused {
+                try? await existing.resume()
+                try? await existing.start()
+            }
+            return existing
+        }
+
+        let handle = try TorrentHandle(params: params, settings: settings, dhtNode: dhtNode)
+        let broadcaster = self.alertBroadcaster
+        await handle.setOnAlert { alert in
+            broadcaster.post(alert)
+        }
         await handle.finishInitialization()
         torrents[hash] = handle
 
-        alertContinuation.yield(TorrentAddedAlert(
+        alertBroadcaster.post(TorrentAddedAlert(
             infoHash: hash,
             name: params.torrentInfo?.name ?? params.magnetLink?.displayName ?? "Unknown"
         ))
@@ -59,14 +111,14 @@ public actor Session {
             let savePath = await handle.getSavePath()
             // Only delete the torrent's specific file/directory, never the whole savePath folder
             if !torrentName.isEmpty && torrentName != "." && torrentName != ".." && torrentName != "/" {
-                let targetURL = URL(fileURLWithPath: savePath).appendingPathComponent(torrentName)
+                let targetURL = URL(filePath: savePath).appending(path: torrentName)
                 try? FileManager.default.removeItem(at: targetURL)
-                let partURL = URL(fileURLWithPath: targetURL.path + ".part")
+                let partURL = URL(filePath: savePath).appending(path: torrentName + ".part")
                 try? FileManager.default.removeItem(at: partURL)
             }
         }
 
-        alertContinuation.yield(TorrentRemovedAlert(infoHash: infoHash))
+        alertBroadcaster.post(TorrentRemovedAlert(infoHash: infoHash))
     }
 
     /// Get a torrent handle by info hash.
@@ -116,13 +168,15 @@ public actor Session {
     }
 
     /// Real-time stream of all torrent statuses for SwiftUI and reactive observers.
-    public func statusStream(interval: TimeInterval = 1.0) -> AsyncStream<[TorrentStatus]> {
-        AsyncStream { continuation in
-            let task = Task {
+    public nonisolated func statusStream(interval: TimeInterval = 1.0) -> AsyncStream<[TorrentStatus]> {
+        let clampedInterval = max(0.1, interval)
+        return AsyncStream(bufferingPolicy: .bufferingNewest(1)) { continuation in
+            let task = Task { [weak self] in
                 while !Task.isCancelled {
+                    guard let self else { break }
                     let statuses = await self.allStatus()
                     continuation.yield(statuses)
-                    try? await Task.sleep(for: .seconds(interval))
+                    try? await Task.sleep(for: .seconds(clampedInterval))
                 }
                 continuation.finish()
             }
@@ -165,6 +219,6 @@ public actor Session {
     /// Shutdown the session.
     public func shutdown() async throws {
         await pauseAll()
-        alertContinuation.finish()
+        alertBroadcaster.finish()
     }
 }

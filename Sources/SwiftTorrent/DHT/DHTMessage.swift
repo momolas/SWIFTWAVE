@@ -85,6 +85,14 @@ public enum DHTMessage: Sendable {
     }
 }
 
-public enum DHTMessageError: Error {
+public enum DHTMessageError: Error, Sendable, Equatable, LocalizedError {
     case invalidMessage
+
+    public var errorDescription: String? {
+        switch self {
+        case .invalidMessage:
+            return "Invalid DHT message format."
+        }
+    }
 }
+

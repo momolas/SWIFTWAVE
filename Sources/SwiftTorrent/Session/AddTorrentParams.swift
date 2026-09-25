@@ -27,7 +27,7 @@ public struct AddTorrentParams: Sendable {
 
     /// Create from a .torrent file path.
     public static func fromFile(_ path: String, savePath: String? = nil, paused: Bool = false, isStreaming: Bool = false) throws -> AddTorrentParams {
-        let data = try Data(contentsOf: URL(fileURLWithPath: path))
+        let data = try Data(contentsOf: URL(filePath: path))
         return try fromData(data, savePath: savePath, paused: paused, isStreaming: isStreaming)
     }
 
@@ -45,7 +45,16 @@ public struct AddTorrentParams: Sendable {
     }
 }
 
-public enum AddTorrentError: Error {
+public enum AddTorrentError: Error, Sendable, Equatable, LocalizedError {
     case invalidMagnetLink
     case noInfoHash
+
+    public var errorDescription: String? {
+        switch self {
+        case .invalidMagnetLink:
+            return "Invalid magnet link URI."
+        case .noInfoHash:
+            return "No info hash could be determined from the provided parameters."
+        }
+    }
 }

@@ -1,7 +1,7 @@
 import XCTest
 import Foundation
 import CryptoKit
-@testable import SwiftTorrent
+@testable import TorrentKit
 
 final class BugFixesTests: XCTestCase {
 

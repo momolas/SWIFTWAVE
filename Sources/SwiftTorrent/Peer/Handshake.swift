@@ -78,9 +78,18 @@ public struct Handshake: Sendable, Equatable {
     }
 }
 
-public enum HandshakeError: Error, Equatable {
+public enum HandshakeError: Error, Sendable, Equatable, LocalizedError {
     case tooShort
     case invalidProtocol
+
+    public var errorDescription: String? {
+        switch self {
+        case .tooShort:
+            return "Handshake payload too short."
+        case .invalidProtocol:
+            return "Invalid protocol string in handshake."
+        }
+    }
 }
 
 /// Generate a random peer ID in Azureus style: -ST0001-<random 12 bytes>

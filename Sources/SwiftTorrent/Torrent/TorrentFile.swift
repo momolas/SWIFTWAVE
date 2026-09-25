@@ -134,6 +134,14 @@ public struct TorrentFile: Sendable {
     }
 }
 
-public enum TorrentFileError: Error {
+public enum TorrentFileError: Error, Sendable, Equatable, LocalizedError {
     case fileNotFound(String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .fileNotFound(let path):
+            return "File not found: \(path)"
+        }
+    }
 }
+

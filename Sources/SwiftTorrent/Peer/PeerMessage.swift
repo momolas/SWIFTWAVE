@@ -294,10 +294,20 @@ public enum PeerMessage: Equatable, Sendable {
     }
 }
 
-public enum PeerMessageError: Error, Equatable {
+public enum PeerMessageError: Error, Sendable, Equatable, LocalizedError {
     case invalidPayload
     case unknownMessageID(UInt8)
+
+    public var errorDescription: String? {
+        switch self {
+        case .invalidPayload:
+            return "Invalid peer message payload."
+        case .unknownMessageID(let id):
+            return "Unknown peer message ID: \(id)"
+        }
+    }
 }
+
 
 // MARK: - Data helpers
 

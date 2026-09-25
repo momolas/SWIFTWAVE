@@ -20,14 +20,18 @@ public struct ResumeData: Sendable, Equatable, Hashable {
     /// Encode to bencoded data.
     public func encode() -> Data {
         let piecesData = completedPieces.toData()
-        let value: BencodeValue = .dictionary([
+        var pairs: [(key: Data, value: BencodeValue)] = [
             (key: Data("completed_pieces".utf8), value: .string(piecesData)),
             (key: Data("downloaded".utf8), value: .integer(downloaded)),
             (key: Data("info_hash".utf8), value: .string(infoHash.bytes)),
+            (key: Data("piece_count".utf8), value: .integer(Int64(completedPieces.count))),
             (key: Data("save_path".utf8), value: .string(Data(savePath.utf8))),
             (key: Data("uploaded".utf8), value: .integer(uploaded)),
-        ])
-        return BencodeEncoder().encode(value)
+        ]
+        if let v2Bytes = infoHash.v2Bytes {
+            pairs.append((key: Data("info_hash_v2".utf8), value: .string(v2Bytes)))
+        }
+        return BencodeEncoder().encode(.dictionary(pairs))
     }
 
     /// Decode from bencoded data.
@@ -43,8 +47,14 @@ public struct ResumeData: Sendable, Equatable, Hashable {
             throw ResumeDataError.invalidFormat
         }
 
-        let infoHash = InfoHash(bytes: hashData)
-        let pieceCount = piecesData.count * 8
+        let infoHash: InfoHash
+        if let v2Bytes = value["info_hash_v2"]?.stringValue, hashData.count == 20, v2Bytes.count == 32 {
+            infoHash = InfoHash(v1Bytes: hashData, v2Bytes: v2Bytes)
+        } else {
+            infoHash = InfoHash(bytes: hashData)
+        }
+
+        let pieceCount = value["piece_count"]?.integerValue.map(Int.init) ?? (piecesData.count * 8)
         let completedPieces = Bitfield(data: piecesData, count: pieceCount)
 
         return ResumeData(
@@ -54,6 +64,13 @@ public struct ResumeData: Sendable, Equatable, Hashable {
     }
 }
 
-public enum ResumeDataError: Error {
+public enum ResumeDataError: Error, Sendable, Equatable, LocalizedError {
     case invalidFormat
+
+    public var errorDescription: String? {
+        switch self {
+        case .invalidFormat:
+            return "Resume data bencode format is invalid or missing required keys."
+        }
+    }
 }

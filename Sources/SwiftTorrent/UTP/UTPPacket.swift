@@ -161,11 +161,29 @@ public struct UTPPacket: Sendable, Equatable {
     }
 }
 
-public enum UTPError: Error, Equatable {
+public enum UTPError: Error, Sendable, Equatable, LocalizedError {
     case packetTooShort
     case unsupportedVersion(UInt8)
     case unknownPacketType(UInt8)
     case connectionRefused
     case connectionTimeout
     case connectionReset
+
+    public var errorDescription: String? {
+        switch self {
+        case .packetTooShort:
+            return "uTP packet too short."
+        case .unsupportedVersion(let v):
+            return "Unsupported uTP version: \(v)"
+        case .unknownPacketType(let t):
+            return "Unknown uTP packet type: \(t)"
+        case .connectionRefused:
+            return "uTP connection refused."
+        case .connectionTimeout:
+            return "uTP connection timed out."
+        case .connectionReset:
+            return "uTP connection reset."
+        }
+    }
 }
+

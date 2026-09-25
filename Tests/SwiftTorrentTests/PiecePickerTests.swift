@@ -1,5 +1,5 @@
 import XCTest
-@testable import SwiftTorrent
+@testable import TorrentKit
 
 final class PiecePickerTests: XCTestCase {
     func testRarestFirst() {
@@ -66,7 +66,7 @@ final class PiecePickerTests: XCTestCase {
 
     func testTieBreakingRarestFirstRandomness() {
         // When multiple pieces have the exact same lowest availability, both should be chosen across multiple iterations
-        var picker = PiecePicker(pieceCount: 10)
+        let picker = PiecePicker(pieceCount: 10)
         var peerBF = Bitfield(count: 10)
         for i in 0..<10 { peerBF.set(i) }
         let have = Bitfield(count: 10)
