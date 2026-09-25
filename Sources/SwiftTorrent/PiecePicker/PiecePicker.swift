@@ -58,65 +58,80 @@ public struct PiecePicker: Sendable {
     /// Pick the next piece to request using rarest-first strategy (or sequential if streaming).
     /// `have` is our own bitfield; `peerHas` is the peer's bitfield.
     public func pick(have: Bitfield, peerHas: Bitfield) -> Int? {
+        let candidates = AccelerateEngine.extractAvailableCandidates(have: have, peerHas: peerHas)
+        guard !candidates.isEmpty else { return nil }
+
         if let engine = sequentialEngine {
-            var candidates: [Int] = []
-            for i in 0..<pieceCount {
-                if !have.get(i) && peerHas.get(i) {
-                    candidates.append(i)
+            if candidates.count >= 64 {
+                let priorities = candidates.map { engine.priority(for: $0) }
+                let scored = AccelerateEngine.computeStreamingPieceScores(
+                    candidateIndices: candidates,
+                    availability: availability,
+                    sequentialPriorities: priorities
+                )
+                return scored.min { $0.score < $1.score }?.index
+            } else {
+                return candidates.min { a, b in
+                    let prioA = engine.priority(for: a)
+                    let prioB = engine.priority(for: b)
+                    if prioA == prioB {
+                        return availability[a] < availability[b]
+                    }
+                    return prioA < prioB
                 }
-            }
-            guard !candidates.isEmpty else { return nil }
-            return candidates.min { a, b in
-                let prioA = engine.priority(for: a)
-                let prioB = engine.priority(for: b)
-                if prioA == prioB {
-                    return availability[a] < availability[b]
-                }
-                return prioA < prioB
             }
         }
 
-        var bestAvail = Int.max
-        var candidates: [Int] = []
-
-        for i in 0..<pieceCount {
-            // We don't have it, peer does have it
-            if !have.get(i) && peerHas.get(i) {
-                let avail = availability[i]
+        if candidates.count >= 32 {
+            let rarest = AccelerateEngine.findRarestCandidates(availability: availability, candidates: candidates)
+            return rarest.randomElement()
+        } else {
+            var bestAvail = Int.max
+            var rarestCandidates: [Int] = []
+            for c in candidates {
+                let avail = availability[c]
                 if avail < bestAvail {
                     bestAvail = avail
-                    candidates = [i]
+                    rarestCandidates = [c]
                 } else if avail == bestAvail {
-                    candidates.append(i)
+                    rarestCandidates.append(c)
                 }
             }
+            return rarestCandidates.randomElement()
         }
-
-        return candidates.randomElement()
     }
 
     /// Pick multiple pieces (for pipelining).
     public func pickMultiple(have: Bitfield, peerHas: Bitfield, count: Int) -> [Int] {
-        var candidates: [(index: Int, avail: Int)] = []
-        for i in 0..<pieceCount {
-            if !have.get(i) && peerHas.get(i) {
-                candidates.append((i, availability[i]))
-            }
-        }
+        let candidates = AccelerateEngine.extractAvailableCandidates(have: have, peerHas: peerHas)
+        guard !candidates.isEmpty else { return [] }
 
         if let engine = sequentialEngine {
-            candidates.sort { a, b in
-                let prioA = engine.priority(for: a.index)
-                let prioB = engine.priority(for: b.index)
-                if prioA == prioB {
-                    return a.avail < b.avail
+            if candidates.count >= 64 {
+                let priorities = candidates.map { engine.priority(for: $0) }
+                let scored = AccelerateEngine.computeStreamingPieceScores(
+                    candidateIndices: candidates,
+                    availability: availability,
+                    sequentialPriorities: priorities
+                )
+                let sorted = scored.sorted { $0.score < $1.score }
+                return Array(sorted.prefix(count).map(\.index))
+            } else {
+                var candidatePairs = candidates.map { (index: $0, avail: availability[$0]) }
+                candidatePairs.sort { a, b in
+                    let prioA = engine.priority(for: a.index)
+                    let prioB = engine.priority(for: b.index)
+                    if prioA == prioB {
+                        return a.avail < b.avail
+                    }
+                    return prioA < prioB
                 }
-                return prioA < prioB
+                return Array(candidatePairs.prefix(count).map(\.index))
             }
         } else {
-            candidates.sort { $0.avail < $1.avail }
+            var candidatePairs = candidates.map { (index: $0, avail: availability[$0]) }
+            candidatePairs.sort { $0.avail < $1.avail }
+            return Array(candidatePairs.prefix(count).map(\.index))
         }
-
-        return Array(candidates.prefix(count).map(\.index))
     }
 }

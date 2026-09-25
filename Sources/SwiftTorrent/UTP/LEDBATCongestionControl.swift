@@ -42,9 +42,17 @@ public struct LEDBATCongestionControl: Sendable {
     /// Maximum segment size (payload bytes per packet).
     public let mss: Int
 
+    /// Accelerate vDSP delay filter tracking rolling base delay and queuing jitter (RFC 6817).
+    public private(set) var delayFilter: AccelerateEngine.DelayFilter
+
+    /// Current queuing delay jitter (RMS deviation) computed via Accelerate vDSP.
+    public var delayJitter: Double {
+        delayFilter.delayJitter
+    }
+
     // MARK: - Initialization
 
-    public init(mss: Int = 1400) {
+    public init(mss: Int = 1400, delayWindowSize: Int = 64) {
         self.mss = mss
         self.cwnd = mss * 2  // Initial window = 2 segments
         self.ssthresh = Self.maxCWND
@@ -52,6 +60,7 @@ public struct LEDBATCongestionControl: Sendable {
         self.baseDelaySampleCount = 0
         self.currentDelay = 0
         self.bytesInFlight = 0
+        self.delayFilter = AccelerateEngine.DelayFilter(windowSize: delayWindowSize)
     }
 
     // MARK: - Delay Updates
@@ -61,11 +70,10 @@ public struct LEDBATCongestionControl: Sendable {
     ///   - sampleDelay: Measured one-way delay in microseconds from the packet timestamp.
     ///   - bytesAcked: Number of bytes newly acknowledged.
     public mutating func onAck(sampleDelay: Int64, bytesAcked: Int) {
-        // Update base delay (rolling minimum)
-        if sampleDelay < baseDelay {
-            baseDelay = sampleDelay
-        }
-        baseDelaySampleCount += 1
+        // Update base delay via Accelerate vDSP rolling minimum
+        delayFilter.addDelaySample(sampleDelay)
+        baseDelay = delayFilter.baseDelay
+        baseDelaySampleCount = delayFilter.sampleCount
         currentDelay = sampleDelay
 
         // Compute queuing delay

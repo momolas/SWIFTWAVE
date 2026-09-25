@@ -30,6 +30,7 @@ public actor TorrentHandle {
     private var totalUploaded: Int64 = 0
     private var downloadedBytesWindow: Int64 = 0
     private var downloadRate: Double = 0
+    private var downloadRateSmoother = AccelerateEngine.RateSmoother(windowSize: 16)
     private var uploadRate: Double = 0
     private var reannounceTask: Task<Void, Never>?
     private var downloadMonitorTask: Task<Void, Never>?
@@ -313,18 +314,7 @@ public actor TorrentHandle {
                 let elapsed = now.timeIntervalSince(lastSampleTime)
                 if elapsed > 0 {
                     let bytesInWindow = await self.consumeWindowBytes()
-                    let instantRate = Double(bytesInWindow) / elapsed
-                    let currentRate = await self.downloadRate
-                    // Exponential moving average filter (EMA) to prevent sawtooth fluctuation
-                    let smoothedRate: Double
-                    if bytesInWindow == 0 && currentRate < 4096 {
-                        smoothedRate = 0
-                    } else if currentRate == 0 {
-                        smoothedRate = instantRate
-                    } else {
-                        smoothedRate = currentRate * 0.70 + instantRate * 0.30
-                    }
-                    await self.setDownloadRate(smoothedRate)
+                    await self.updateDownloadRateSample(bytesInWindow: bytesInWindow, elapsed: elapsed)
                     lastSampleTime = now
                 }
 
@@ -364,6 +354,28 @@ public actor TorrentHandle {
                 }
             }
         }
+    }
+
+    private func updateDownloadRateSample(bytesInWindow: Int64, elapsed: Double) {
+        guard elapsed > 0 else { return }
+        let instantRate = Double(bytesInWindow) / elapsed
+        downloadRateSmoother.addSample(instantRate)
+        let smoothed = downloadRateSmoother.smoothedRate
+        if bytesInWindow == 0 && smoothed < 4096 {
+            self.downloadRate = 0
+        } else {
+            self.downloadRate = smoothed
+        }
+    }
+
+    /// Estimated download throughput jitter (RMS rate deviation) computed via Accelerate vDSP.
+    public func getDownloadJitter() -> Double {
+        downloadRateSmoother.rateJitter
+    }
+
+    /// Peak download rate observed in recent window computed via Accelerate vDSP.
+    public func getPeakDownloadRate() -> Double {
+        downloadRateSmoother.peakRate
     }
 
     private func setDownloadRate(_ rate: Double) {

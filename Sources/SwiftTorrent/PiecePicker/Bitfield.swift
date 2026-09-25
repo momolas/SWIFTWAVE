@@ -78,6 +78,31 @@ public struct Bitfield: Sendable, Equatable, Hashable {
         popcount == 0
     }
 
+    /// Returns a new bitfield containing bits set in `self` but NOT in `other` (`self & ~other`).
+    public func subtracting(_ other: Bitfield) -> Bitfield {
+        var result = Bitfield(count: count)
+        let words = min(storage.count, other.storage.count)
+        for w in 0..<words {
+            result.storage[w] = storage[w] & ~other.storage[w]
+        }
+        return result
+    }
+
+    /// Returns a new bitfield containing bits set in both `self` and `other` (`self & other`).
+    public func intersecting(_ other: Bitfield) -> Bitfield {
+        var result = Bitfield(count: count)
+        let words = min(storage.count, other.storage.count)
+        for w in 0..<words {
+            result.storage[w] = storage[w] & other.storage[w]
+        }
+        return result
+    }
+
+    /// Fast candidate piece extraction using word-level SIMD acceleration.
+    public func missingPieces(peerHas: Bitfield, maxPieces: Int? = nil) -> [Int] {
+        AccelerateEngine.extractAvailableCandidates(have: self, peerHas: peerHas, maxPieces: maxPieces)
+    }
+
     /// Serialize to bytes (big-endian bit order) for network transmission.
     public func toData() -> Data {
         let byteCount = (count + 7) / 8
