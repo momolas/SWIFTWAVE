@@ -26,16 +26,16 @@ public struct FileStorage: Sendable {
         public let length: Int
     }
 
-    /// Get the file slices for a given piece index.
-    public func fileSlices(forPiece pieceIndex: Int) -> [FileSlice] {
-        let pieceStart = Int64(pieceIndex) * Int64(pieceLength)
-        let pieceEnd = min(pieceStart + Int64(pieceLength), totalSize)
-        let length = pieceEnd - pieceStart
-
-        guard length > 0 else { return [] }
+    /// Get the file slices for an exact block range within a piece.
+    public func fileSlices(forPiece pieceIndex: Int, offset: Int, length: Int) -> [FileSlice] {
+        guard pieceIndex >= 0 && pieceIndex < pieceCount && offset >= 0 && length > 0 else { return [] }
+        let pieceStart = Int64(pieceIndex) * Int64(pieceLength) + Int64(offset)
+        let totalPieceBytes = Int64(pieceSize(pieceIndex))
+        let requestedLength = min(Int64(length), totalPieceBytes - Int64(offset))
+        guard requestedLength > 0 else { return [] }
 
         var slices: [FileSlice] = []
-        var remaining = length
+        var remaining = requestedLength
         var currentOffset = pieceStart
 
         for (i, file) in files.enumerated() {
@@ -59,6 +59,11 @@ public struct FileStorage: Sendable {
         }
 
         return slices
+    }
+
+    /// Get the file slices for a given piece index.
+    public func fileSlices(forPiece pieceIndex: Int) -> [FileSlice] {
+        fileSlices(forPiece: pieceIndex, offset: 0, length: pieceSize(pieceIndex))
     }
 
     /// Total number of pieces.

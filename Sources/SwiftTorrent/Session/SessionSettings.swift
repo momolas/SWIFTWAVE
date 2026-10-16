@@ -17,6 +17,8 @@ public struct SessionSettings: Sendable {
     public var isTrackerBlocked: (@Sendable (String) -> Bool)?
     public var encryptionPolicy: EncryptionPolicy
     public var utpEnabled: Bool
+    public var lsdEnabled: Bool
+    public var maxUploadSlots: Int
 
     public init(
         listenPort: UInt16 = 6881,
@@ -33,7 +35,9 @@ public struct SessionSettings: Sendable {
         uploadMultiplier: Double = 1.0,
         isTrackerBlocked: (@Sendable (String) -> Bool)? = nil,
         encryptionPolicy: EncryptionPolicy = .preferred,
-        utpEnabled: Bool = true
+        utpEnabled: Bool = true,
+        lsdEnabled: Bool = true,
+        maxUploadSlots: Int = 4
     ) {
         self.listenPort = listenPort
         self.maxConnections = maxConnections
@@ -50,5 +54,7 @@ public struct SessionSettings: Sendable {
         self.isTrackerBlocked = isTrackerBlocked
         self.encryptionPolicy = encryptionPolicy
         self.utpEnabled = utpEnabled
+        self.lsdEnabled = lsdEnabled
+        self.maxUploadSlots = maxUploadSlots
     }
 }

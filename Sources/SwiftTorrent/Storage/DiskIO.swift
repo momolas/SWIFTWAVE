@@ -21,6 +21,8 @@ public actor DiskIO {
     private let ioQueue: DispatchQueue
     public let usePartExtension: Bool
 
+    private let filePool = FilePool()
+
     public init(basePath: String, fileStorage: FileStorage, threadPoolSize: Int = 4, usePartExtension: Bool = true) {
         self.basePath = basePath
         self.fileStorage = fileStorage
@@ -28,9 +30,9 @@ public actor DiskIO {
         self.usePartExtension = usePartExtension
     }
 
-    /// Explicitly shutdown I/O queue (no-op retained for backwards compatibility).
+    /// Explicitly shutdown I/O queue and close all cached file descriptors.
     public func shutdown() async {
-        // No explicit shutdown required for GCD DispatchQueue
+        filePool.closeAll()
     }
 
     private func runIO<T: Sendable>(_ block: @escaping @Sendable () throws -> T) async throws -> T {
@@ -82,17 +84,24 @@ public actor DiskIO {
         return resolvedPath
     }
 
-    /// Resolves file slices with sanitized paths for a given piece index.
-    private func resolvedSlices(forPiece index: Int) throws -> [(path: String, offset: Int64, length: Int)] {
-        try fileStorage.fileSlices(forPiece: index).map {
+    /// Resolves file slices with sanitized paths for a given piece index and optional block range.
+    private func resolvedSlices(forPiece index: Int, offset: Int? = nil, length: Int? = nil) throws -> [(path: String, offset: Int64, length: Int)] {
+        let slices: [FileStorage.FileSlice]
+        if let offset, let length {
+            slices = fileStorage.fileSlices(forPiece: index, offset: offset, length: length)
+        } else {
+            slices = fileStorage.fileSlices(forPiece: index)
+        }
+        return try slices.map {
             (path: try resolvedPath(for: $0.path), offset: $0.offset, length: $0.length)
         }
     }
 
-    /// Write a piece to disk.
+    /// Write a piece to disk using high-performance positional I/O.
     public func writePiece(index: Int, data: Data) async throws {
         let resolvedSlices = try resolvedSlices(forPiece: index)
         let usePart = self.usePartExtension
+        let pool = self.filePool
         try await runIO {
             var dataOffset = 0
             for slice in resolvedSlices {
@@ -102,27 +111,18 @@ public actor DiskIO {
                 }
                 let finalPath = slice.path
                 let filePath = Self.effectiveWritePath(for: finalPath, usePartExtension: usePart)
-                let dir = (filePath as NSString).deletingLastPathComponent
-                try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
-
-                if !FileManager.default.fileExists(atPath: filePath) {
-                    FileManager.default.createFile(atPath: filePath, contents: nil)
-                }
-
-                let handle = try FileHandle(forWritingTo: URL(fileURLWithPath: filePath))
-                defer { try? handle.close() }
-                try handle.seek(toOffset: UInt64(slice.offset))
                 let chunk = data.subdata(in: dataOffset..<endOffset)
-                try handle.write(contentsOf: chunk)
+                try pool.write(path: filePath, offset: slice.offset, data: chunk)
                 dataOffset = endOffset
             }
         }
     }
 
-    /// Read a piece from disk.
+    /// Read a piece from disk using high-performance positional I/O.
     public func readPiece(index: Int) async throws -> Data {
         let resolvedSlices = try resolvedSlices(forPiece: index)
         let usePart = self.usePartExtension
+        let pool = self.filePool
         return try await runIO {
             var result = Data()
             for slice in resolvedSlices {
@@ -130,10 +130,8 @@ public actor DiskIO {
                 guard FileManager.default.fileExists(atPath: filePath) else {
                     return Data()
                 }
-                let handle = try FileHandle(forReadingFrom: URL(fileURLWithPath: filePath))
-                defer { try? handle.close() }
-                try handle.seek(toOffset: UInt64(slice.offset))
-                guard let chunk = try handle.read(upToCount: slice.length), chunk.count == slice.length else {
+                let chunk = try pool.read(path: filePath, offset: slice.offset, count: slice.length)
+                guard chunk.count == slice.length else {
                     return Data()
                 }
                 result.append(chunk)
@@ -142,13 +140,27 @@ public actor DiskIO {
         }
     }
 
-    /// Read a specific block (slice) of a piece from disk.
+    /// Read a specific block (slice) of a piece directly from disk without reading the whole piece into memory.
     public func readBlock(pieceIndex: Int, offset: Int, length: Int) async throws -> Data {
         guard offset >= 0, length > 0 else { return Data() }
-        let pieceData = try await readPiece(index: pieceIndex)
-        guard offset < pieceData.count else { return Data() }
-        let end = min(offset + length, pieceData.count)
-        return pieceData.subdata(in: offset..<end)
+        let resolvedSlices = try resolvedSlices(forPiece: pieceIndex, offset: offset, length: length)
+        let usePart = self.usePartExtension
+        let pool = self.filePool
+        return try await runIO {
+            var result = Data()
+            for slice in resolvedSlices {
+                let filePath = Self.effectiveReadPath(for: slice.path, usePartExtension: usePart)
+                guard FileManager.default.fileExists(atPath: filePath) else {
+                    return Data()
+                }
+                let chunk = try pool.read(path: filePath, offset: slice.offset, count: slice.length)
+                guard chunk.count == slice.length else {
+                    return Data()
+                }
+                result.append(chunk)
+            }
+            return result
+        }
     }
 
     /// Ensure all files exist with correct sizes (creates .part file if enabled).
@@ -194,11 +206,14 @@ public actor DiskIO {
             resolvedFilesList.append(path)
         }
         let resolvedFiles = resolvedFilesList
+        let pool = self.filePool
 
         try await runIO {
             for finalPath in resolvedFiles {
                 let partPath = finalPath + ".part"
                 if FileManager.default.fileExists(atPath: partPath) {
+                    pool.close(path: partPath)
+                    pool.close(path: finalPath)
                     let partURL = URL(fileURLWithPath: partPath)
                     let finalURL = URL(fileURLWithPath: finalPath)
                     if FileManager.default.fileExists(atPath: finalPath) {

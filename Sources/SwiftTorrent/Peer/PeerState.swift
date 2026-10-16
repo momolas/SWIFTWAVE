@@ -23,6 +23,14 @@ public actor PeerState {
     private var pendingRequests: [BlockRequest: Date] = [:]
     public let maxPipelineDepth: Int
 
+    public private(set) var isSnubbed: Bool = false
+    public private(set) var lastBlockReceivedAt: Date = Date()
+    public private(set) var downloadRate: Double = 0.0
+    public private(set) var uploadRate: Double = 0.0
+    public private(set) var desiredQueueSize: Int = 4
+    private var bytesReceivedInWindow: Int = 0
+    private var bytesSentInWindow: Int = 0
+
     public init(pieceCount: Int, maxPipelineDepth: Int = 64) {
         self.peerBitfield = Bitfield(count: pieceCount)
         self.maxPipelineDepth = maxPipelineDepth
@@ -44,8 +52,64 @@ public actor PeerState {
         pendingRequests.count
     }
 
+    public var effectiveQueueLimit: Int {
+        if isSnubbed {
+            return 1
+        }
+        return min(maxPipelineDepth, max(2, desiredQueueSize))
+    }
+
     public var canRequest: Bool {
-        pendingRequests.count < maxPipelineDepth
+        pendingRequests.count < effectiveQueueLimit
+    }
+
+    public func recordBlockReceived(bytes: Int) {
+        lastBlockReceivedAt = Date()
+        isSnubbed = false
+        bytesReceivedInWindow += bytes
+        // Slow-start ramp-up: grow pipeline capacity as blocks arrive
+        if desiredQueueSize < maxPipelineDepth {
+            desiredQueueSize += 1
+        }
+    }
+
+    public func recordBlockSent(bytes: Int) {
+        bytesSentInWindow += bytes
+    }
+
+    public func updateRates(elapsed: Double) {
+        guard elapsed > 0 else { return }
+        downloadRate = Double(bytesReceivedInWindow) / elapsed
+        uploadRate = Double(bytesSentInWindow) / elapsed
+        bytesReceivedInWindow = 0
+        bytesSentInWindow = 0
+
+        // Bandwidth-Delay Product (BDP) queue sizing with 2.5s target queue time
+        if downloadRate > 0 {
+            let targetBlocks = Int((downloadRate * 2.5) / 16384.0)
+            let clampedTarget = max(2, min(maxPipelineDepth, targetBlocks))
+            if desiredQueueSize < clampedTarget {
+                desiredQueueSize = min(clampedTarget, desiredQueueSize + 2)
+            } else if desiredQueueSize > clampedTarget {
+                desiredQueueSize = max(clampedTarget, desiredQueueSize - 1)
+            }
+        }
+    }
+
+    public func checkSnubbing(now: Date = Date(), timeout: TimeInterval = 12.0) -> Bool {
+        guard !peerChoking, amInterested, !pendingRequests.isEmpty else { return false }
+        if now.timeIntervalSince(lastBlockReceivedAt) > timeout {
+            let newlySnubbed = !isSnubbed
+            isSnubbed = true
+            desiredQueueSize = 1
+            return newlySnubbed
+        }
+        return false
+    }
+
+    public func resetSnubbing() {
+        isSnubbed = false
+        lastBlockReceivedAt = Date()
     }
 
     public func getPendingRequests() -> [BlockRequest: Date] {

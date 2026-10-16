@@ -47,6 +47,11 @@ public actor TorrentHandle {
     private var dhtAnnounceTask: Task<Void, Never>?
     public var onAlert: (@Sendable (any Alert) -> Void)?
 
+    private let downloadLimiter: BandwidthLimiter
+    private let uploadLimiter: BandwidthLimiter
+    private let localServiceDiscovery: LocalServiceDiscovery?
+    private var seedMonitorTask: Task<Void, Never>?
+
     /// Sets the alert dispatch callback for torrent events.
     public func setOnAlert(_ handler: (@Sendable (any Alert) -> Void)?) {
         self.onAlert = handler
@@ -73,8 +78,17 @@ public actor TorrentHandle {
             peerID: peerID,
             maxConnections: settings.maxConnectionsPerTorrent,
             isPrivate: isPriv,
-            dhtPort: dhtP
+            dhtPort: dhtP,
+            maxUploadSlots: settings.maxUploadSlots
         )
+
+        self.downloadLimiter = BandwidthLimiter(rateLimit: settings.downloadRateLimit)
+        self.uploadLimiter = BandwidthLimiter(rateLimit: settings.uploadRateLimit)
+        if settings.lsdEnabled && !isPriv {
+            self.localServiceDiscovery = LocalServiceDiscovery(listenPort: settings.listenPort)
+        } else {
+            self.localServiceDiscovery = nil
+        }
 
         if let magnet = params.magnetLink, !magnet.trackers.isEmpty {
             let tiers = magnet.trackers.map { [$0] }
@@ -107,10 +121,18 @@ public actor TorrentHandle {
             Task { await self?.handlePieceCompleted(pieceIndex) }
         }
         await peerManager.setOnBlockReceived { [weak self] bytes in
-            Task { await self?.handleBlockReceived(bytes) }
+            Task {
+                guard let self else { return }
+                await self.downloadLimiter.requestBandwidth(bytes: bytes)
+                await self.handleBlockReceived(bytes)
+            }
         }
         await peerManager.setOnBlockSent { [weak self] bytes in
-            Task { await self?.handleBlockSent(bytes) }
+            Task {
+                guard let self else { return }
+                await self.uploadLimiter.requestBandwidth(bytes: bytes)
+                await self.handleBlockSent(bytes)
+            }
         }
     }
 
@@ -274,6 +296,20 @@ public actor TorrentHandle {
         if !isPriv && settings.dhtEnabled, let dht = dhtNode {
             startDHTLookupAndAnnounce(dhtNode: dht)
         }
+
+        // Announce and discover peers on Local Service Discovery (BEP-14)
+        if let lsd = localServiceDiscovery {
+            try? await lsd.start()
+            await lsd.announce(infoHash: infoHash.bytes)
+            await lsd.setOnPeerDiscovered { [weak self] hash, address, port in
+                Task {
+                    guard let self else { return }
+                    if self.infoHash.bytes == hash {
+                        await self.peerManager.addPeers([(address, port)])
+                    }
+                }
+            }
+        }
     }
 
     private func onMetadataReceived(info: TorrentInfo) async {
@@ -305,6 +341,8 @@ public actor TorrentHandle {
         downloadMonitorTask = Task { [weak self] in
             var lastSampleTime = Date()
             var lastReplenishAnnounceTime = Date()
+            var chokeTickCounter = 0
+            var lsdAnnounceCounter = 0
 
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(1))
@@ -316,6 +354,25 @@ public actor TorrentHandle {
                     let bytesInWindow = await self.consumeWindowBytes()
                     await self.updateDownloadRateSample(bytesInWindow: bytesInWindow, elapsed: elapsed)
                     lastSampleTime = now
+
+                    // 1. Update per-peer download & upload throughput rates
+                    await self.peerManager.updatePeerRates(elapsed: elapsed)
+                    // 2. Anti-snubbing detection & block reallocation
+                    await self.peerManager.checkAntiSnubbing()
+                }
+
+                chokeTickCounter += 1
+                if chokeTickCounter >= 10 {
+                    chokeTickCounter = 0
+                    await self.peerManager.runChokeTick(isSeeding: false)
+                }
+
+                if let lsd = self.localServiceDiscovery {
+                    lsdAnnounceCounter += 1
+                    if lsdAnnounceCounter >= 120 {
+                        lsdAnnounceCounter = 0
+                        await lsd.announce(infoHash: self.infoHash.bytes)
+                    }
                 }
 
                 let complete = await self.checkCompletion()
@@ -424,6 +481,44 @@ public actor TorrentHandle {
         for (_, cont) in conts {
             cont.resume()
         }
+
+        startSeedingMonitor()
+    }
+
+    private func startSeedingMonitor() {
+        seedMonitorTask?.cancel()
+        seedMonitorTask = Task { [weak self] in
+            var lastSampleTime = Date()
+            var chokeTickCounter = 0
+
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(1))
+                guard let self, !Task.isCancelled else { break }
+
+                let now = Date()
+                let elapsed = now.timeIntervalSince(lastSampleTime)
+                if elapsed > 0 {
+                    lastSampleTime = now
+                    await self.peerManager.updatePeerRates(elapsed: elapsed)
+                }
+
+                chokeTickCounter += 1
+                if chokeTickCounter >= 10 {
+                    chokeTickCounter = 0
+                    await self.peerManager.runChokeTick(isSeeding: true)
+                }
+            }
+        }
+    }
+
+    /// Set dynamic download rate limit (0 = unlimited).
+    public func setDownloadRateLimit(_ limit: Int) {
+        downloadLimiter.setRateLimit(limit)
+    }
+
+    /// Set dynamic upload rate limit (0 = unlimited).
+    public func setUploadRateLimit(_ limit: Int) {
+        uploadLimiter.setRateLimit(limit)
     }
 
     /// Announce to all tracker tiers concurrently.
@@ -476,10 +571,13 @@ public actor TorrentHandle {
         uploadRate = 0
         reannounceTask?.cancel()
         downloadMonitorTask?.cancel()
+        seedMonitorTask?.cancel()
         dhtAnnounceTask?.cancel()
         reannounceTask = nil
         downloadMonitorTask = nil
+        seedMonitorTask = nil
         dhtAnnounceTask = nil
+        await localServiceDiscovery?.stop()
 
         let metaConts = metadataContinuations.values
         metadataContinuations.removeAll()

@@ -34,19 +34,24 @@ public actor PeerManager {
     private let localPexID: UInt8 = PeerExchange.defaultLocalExtensionID
 
     private var pieceCount: Int = 0
+    public let choker: Choker
+    public let smartBan: SmartBan
 
     public init(
         infoHash: Data,
         peerID: Data,
         maxConnections: Int = 50,
         isPrivate: Bool = false,
-        dhtPort: UInt16? = nil
+        dhtPort: UInt16? = nil,
+        maxUploadSlots: Int = 4
     ) {
         self.infoHash = infoHash
         self.peerID = peerID
         self.maxConnections = maxConnections
         self.isPrivate = isPrivate
         self.dhtPort = dhtPort
+        self.choker = Choker(maxUploadSlots: maxUploadSlots)
+        self.smartBan = SmartBan()
     }
 
     public func configure(pieceManager: PieceManager, piecePicker: PiecePicker, diskIO: DiskIO, pieceCount: Int) {
@@ -102,6 +107,7 @@ public actor PeerManager {
     /// Add a peer and attempt connection.
     public func addPeer(address: String, port: UInt16) async {
         let key = "\(address):\(port)"
+        guard !smartBan.isAddressBanned(address: address) else { return }
         guard connections[key] == nil else { return }
         guard connections.count < maxConnections else {
             if !candidatePeers.contains(where: { $0.address == address && $0.port == port }) {
@@ -211,10 +217,12 @@ public actor PeerManager {
             try? await conn.send(.port(port))
         }
 
-        // 3. Send interested and unchoke proactively
+        // 3. Send interested; unchoke if we have spare capacity under maxUploadSlots
         try? await conn.send(.interested)
-        await state.setAmChoking(false)
-        try? await conn.send(.unchoke)
+        if await countUnchokedPeers() < choker.maxUploadSlots {
+            await state.setAmChoking(false)
+            try? await conn.send(.unchoke)
+        }
 
         // 4. BEP-10 Extended Handshake (ut_metadata and ut_pex)
         if conn.supportsExtensions {
@@ -318,8 +326,10 @@ public actor PeerManager {
 
         case .interested:
             await state.setPeerInterested(true)
-            await state.setAmChoking(false)
-            try? await connections[key]?.send(.unchoke)
+            if await countUnchokedPeers() < choker.maxUploadSlots {
+                await state.setAmChoking(false)
+                try? await connections[key]?.send(.unchoke)
+            }
 
         case .notInterested:
             await state.setPeerInterested(false)
@@ -366,6 +376,8 @@ public actor PeerManager {
             let offset = Int(begin)
             let request = PeerState.BlockRequest(pieceIndex: pieceIndex, offset: offset, length: block.count)
             await state.removePendingRequest(request)
+            await state.recordBlockReceived(bytes: block.count)
+            smartBan.recordBlock(pieceIndex: pieceIndex, offset: offset, data: block, peerKey: key)
             let otherKeys = globalPendingRequests.removeValue(forKey: request)
             onBlockReceived?(block.count)
 
@@ -425,6 +437,7 @@ public actor PeerManager {
             if canServe, let dio = diskIO, let pm = pieceManager, await pm.hasPiece(pIndex) {
                 if let block = try? await dio.readBlock(pieceIndex: pIndex, offset: Int(begin), length: Int(length)), !block.isEmpty {
                     try? await connections[key]?.send(.piece(index: index, begin: begin, block: block))
+                    await state.recordBlockSent(bytes: block.count)
                     onBlockSent?(block.count)
                 }
             } else if isFast {
@@ -606,7 +619,16 @@ public actor PeerManager {
     private func onPieceComplete(index pieceIndex: Int, data: Data) async {
         guard let pm = pieceManager else { return }
         let verified = await pm.completePiece(pieceIndex)
-        guard verified else { return }
+        if !verified {
+            smartBan.onPieceFailed(pieceIndex: pieceIndex)
+            return
+        }
+
+        // Smart Ban: Ban any peer that previously sent a corrupt block for this piece
+        let bannedPeers = smartBan.onPieceVerified(pieceIndex: pieceIndex, verifiedData: data)
+        for badKey in bannedPeers {
+            await disconnectAndBanPeer(badKey)
+        }
 
         // Await disk persistence before broadcasting piece availability (BEP-3 / AGENTS.md)
         if let dio = diskIO {
@@ -651,6 +673,25 @@ public actor PeerManager {
                 }
             }
         }
+    }
+
+    /// Disconnects and removes a banned peer.
+    public func disconnectAndBanPeer(_ key: String) async {
+        if let conn = connections[key] {
+            try? await conn.close()
+        }
+        removePeerByKey(key)
+    }
+
+    /// Returns count of peers that we are currently unchoking.
+    public func countUnchokedPeers() async -> Int {
+        var count = 0
+        for key in connectedPeers {
+            if let state = peerStates[key], !(await state.amChoking) {
+                count += 1
+            }
+        }
+        return count
     }
 
     /// Remove a peer.
@@ -733,8 +774,9 @@ public actor PeerManager {
 
     /// Check for timed-out requests and cancel them.
     public func checkTimeouts() async {
+        var hadTimeouts = false
         for (key, state) in peerStates {
-            let timedOut = await state.timedOutRequests(timeout: 4.0)
+            let timedOut = await state.timedOutRequests(timeout: 5.0)
             for request in timedOut {
                 await state.removePendingRequest(request)
                 if var peers = globalPendingRequests[request] {
@@ -745,10 +787,11 @@ public actor PeerManager {
                         globalPendingRequests[request] = peers
                     }
                 }
+                hadTimeouts = true
             }
-            if !timedOut.isEmpty {
-                await fillRequests(for: key)
-            }
+        }
+        if hadTimeouts {
+            await fillAllAvailablePeers()
         }
 
         // Self-healing: purge any global requests for inactive or desynced peers
@@ -781,6 +824,82 @@ public actor PeerManager {
 
         // Awaken any unchoked peers that have idle pipeline capacity
         await fillAllAvailablePeers()
+    }
+
+    /// Update per-peer download and upload throughput rates.
+    public func updatePeerRates(elapsed: Double) async {
+        guard elapsed > 0 else { return }
+        for (key, state) in peerStates {
+            await state.updateRates(elapsed: elapsed)
+            if var info = peerInfos[key] {
+                info.downloadRate = await state.downloadRate
+                info.uploadRate = await state.uploadRate
+                peerInfos[key] = info
+            }
+        }
+    }
+
+    /// Detect snubbed peers and reallocate their pending requests to active peers.
+    public func checkAntiSnubbing() async {
+        let now = Date()
+        var newlySnubbedKeys: [String] = []
+        for (key, state) in peerStates {
+            if await state.checkSnubbing(now: now, timeout: 12.0) {
+                newlySnubbedKeys.append(key)
+            }
+        }
+        if !newlySnubbedKeys.isEmpty {
+            for key in newlySnubbedKeys {
+                guard let state = peerStates[key] else { continue }
+                let dropped = await state.clearPendingRequests()
+                for req in dropped {
+                    if var peers = globalPendingRequests[req] {
+                        peers.remove(key)
+                        if peers.isEmpty {
+                            globalPendingRequests.removeValue(forKey: req)
+                        } else {
+                            globalPendingRequests[req] = peers
+                        }
+                    }
+                }
+            }
+            await fillAllAvailablePeers()
+        }
+    }
+
+    /// Run periodic Tit-for-Tat choke evaluation (BEP-3).
+    public func runChokeTick(isSeeding: Bool) async {
+        var candidates: [Choker.PeerCandidate] = []
+        for key in connectedPeers {
+            guard let state = peerStates[key] else { continue }
+            let isInterested = await state.peerInterested
+            let amChoking = await state.amChoking
+            let dlRate = await state.downloadRate
+            let upRate = await state.uploadRate
+            let bf = await state.getPeerBitfield()
+            let isSeed = pieceCount > 0 && bf.allSet
+
+            candidates.append(Choker.PeerCandidate(
+                key: key,
+                isInterested: isInterested,
+                amChoking: amChoking,
+                downloadRate: dlRate,
+                uploadRate: upRate,
+                isSeed: isSeed
+            ))
+        }
+
+        let decision = choker.evaluate(candidates: candidates, isSeeding: isSeeding)
+        for key in decision.peersToUnchoke {
+            guard let state = peerStates[key], let conn = connections[key] else { continue }
+            await state.setAmChoking(false)
+            try? await conn.send(.unchoke)
+        }
+        for key in decision.peersToChoke {
+            guard let state = peerStates[key], let conn = connections[key] else { continue }
+            await state.setAmChoking(true)
+            try? await conn.send(.choke)
+        }
     }
 
     /// Disconnect all active peers and release resources.
